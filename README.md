@@ -1,4 +1,4 @@
-# titi_star
+# Tini
 
 A new Flutter project.
 
