@@ -72,7 +72,7 @@ dependencies:
   pinput: ^6.0.2
   share_plus: ^13.1.0
   app_links: ^7.0.0
-  settings_ui: ^3.0.1
+  settings_ui: ^4.0.2
   audioplayers: ^6.8.0
   flutter_facebook_auth: ^7.1.6
   flutter_secure_storage: ^10.0.0
