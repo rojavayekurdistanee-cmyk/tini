@@ -1,0 +1,164 @@
+
+name: titi_star
+description: "The Official Tini Application - Advanced Edition."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  crypto: ^3.0.6
+  archive: 4.0.7
+  flutter:
+    sdk: flutter
+
+  # --- الأساسيات والأيقونات ---
+  cupertino_icons: ^1.0.8
+  iconsax: ^0.0.8
+  remixicon: ^4.9.1
+  material_design_icons_flutter: ^7.0.7296
+
+  # --- محرك التشغيل والدخول (Firebase & Auth) ---
+  firebase_core: ^4.11.0
+  firebase_auth: ^6.5.4
+  cloud_firestore: ^6.6.0
+  google_sign_in: ^5.4.4
+  shared_preferences: ^2.5.5
+
+  # --- الفيديو والوسائط (Media Engine) ---
+  chewie: ^1.13.0
+  camera: ^0.12.0+1
+  image_picker: ^1.1.2
+  photo_manager: ^3.9.0
+  photo_manager_image_provider: ^2.2.0
+  get_thumbnail_video: ^0.7.3
+  video_compress: ^3.1.4
+  cached_network_image: ^3.4.1
+  flutter_cache_manager: ^3.4.2
+  ffmpeg_kit_flutter_new: ^4.1.0
+
+  # --- جمالية التطبيق والأنيميشن (UI & FX) ---
+  lottie: ^3.1.2
+  animate_do: ^5.1.0
+  glass_kit: ^4.0.2
+  percent_indicator: ^4.2.5
+  shimmer: ^3.0.0
+  emoji_picker_flutter: ^4.4.0
+  modal_bottom_sheet: ^3.0.0
+  popover: ^0.4.0
+  flutter_staggered_grid_view: ^0.7.0
+  syncfusion_flutter_sliders: ^33.2.15
+
+  # --- إدارة البيانات والمنطق (Logic & State) ---
+  provider: ^6.1.1
+  get: ^4.7.3
+  intl: ^0.20.2
+  timeago: ^3.7.1
+  dio: ^5.9.2
+  path_provider: ^2.1.5
+  visibility_detector: ^0.4.0+2
+
+  # --- البث المباشر والذكاء الاصطناعي (Advanced) ---
+  google_mlkit_face_detection: ^0.13.2
+  story_view: ^0.16.6
+  screenshot: ^3.0.0
+  permission_handler: ^12.0.3
+  gal: ^2.3.2
+
+  # --- أدوات إضافية (Tools) ---
+  intl_phone_field: ^3.2.0
+  pinput: ^6.0.2
+  share_plus: ^13.1.0
+  app_links: ^7.0.0
+  settings_ui: ^3.0.1
+  audioplayers: ^6.8.0
+  flutter_facebook_auth: ^7.1.6
+  flutter_secure_storage: ^10.0.0
+  cloud_functions: ^6.3.3
+  pdf: ^3.12.0
+  printing: ^5.14.3
+  firebase_app_check: ^0.4.5
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  audio_session: ^0.2.3
+  detectable_text_field: ^3.0.2
+  http: ^1.6.0
+  geocoding: ^4.0.0
+  geolocator: ^14.0.2
+  video_editor: ^3.0.0
+  video_trimmer: ^5.0.0
+  audio_waveforms: ^2.0.2
+  flutter_local_notifications: ^22.2.0
+  video_player: ^2.11.1
+  video_thumbnail: ^0.5.6
+  in_app_purchase: ^3.3.0
+  device_info_plus: ^13.2.0
+  font_awesome_flutter: ^11.0.0
+  url_launcher: ^6.3.2
+  firebase_messaging: ^16.4.3
+  preload_page_view: ^0.2.0
+  minio: ^3.5.8
+  flutter_dotenv: ^6.0.1
+  path: ^1.9.1
+  image: 4.5.4
+  flutter_image_compress: ^2.5.1
+  local_auth: ^2.2.0
+  webview_flutter: ^4.14.1
+  connectivity_plus: ^7.3.1
+  google_fonts: ^9.0.0
+  record: ^7.1.2
+  file_picker: ^13.1.0
+  latlong2: ^0.10.1
+  flutter_map: ^8.3.2
+
+dependency_overrides:
+  archive: 4.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  change_app_package_name: ^1.5.0
+
+flutter:
+  uses-material-design: true
+  shaders:
+    - shaders/tini_chroma.frag
+
+  assets:
+    - .env
+    - assets/icon.png
+    - assets/titi_splash.png
+    - assets/tini_dog_champion_scene.mp4
+    - assets/tini_sled_scene_forward.mp4
+    - assets/fire_ring.webp
+    - assets/stickers/social/
+    - assets/stickers/dayofdead/
+    - assets/stickers/halloween/
+    - assets/stickers/christmas/
+    - assets/stickers/newyear/
+    - assets/stickers/love/
+    - assets/stickers/sports/
+    - assets/stickers/trending/
+    - assets/stickers/food/
+    - assets/stickers/hearts/
+    - assets/stickers/text/
+    - assets/stickers/arrows/
+    - assets/stickers/sparkles/
+    - assets/stickers/womensday/
+    - assets/stickers/fathersday/
+    - assets/stickers/school/
+
+# --- إعدادات أيقونة التطبيق (Tini Icon Settings) ---
+flutter_launcher_icons:
+  android: "ic_titi"
+  ios: false
+  image_path: "assets/icon.png"
+  adaptive_icon_background: "#FF000000"
+  adaptive_icon_foreground: "assets/icon.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true

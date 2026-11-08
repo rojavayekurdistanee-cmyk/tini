@@ -1,0 +1,481 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // [Tini - Mention Privacy]: التحقق من خصوصية الذكر قبل إنشاء نشاط الذكر.
+    // الحسابات القديمة التي لا تحتوي على mentionPrivacy تبقى على "الجميع".
+    function mentionActivityAllowed(targetUid) {
+      let target = get(/databases/$(database)/documents/users/$(targetUid));
+      let choice = target.data.get('mentionPrivacy', 'everyone');
+      return request.auth.uid == targetUid
+        || choice == 'everyone'
+        || (choice == 'following'
+          && exists(/databases/$(database)/documents/users/$(targetUid)/following/$(request.auth.uid)))
+        || (choice == 'friends'
+          && exists(/databases/$(database)/documents/users/$(targetUid)/following/$(request.auth.uid))
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid)/following/$(targetUid)));
+    }
+
+    // ⭐ [Titi Star الإضافة الجديدة]: ممرات الهاشتاقات والمناشن لفتح صلاحيات النشر
+    match /hashtags/{hashtag} {
+      allow read: if true;
+      allow write: if request.auth!= null;
+    }
+
+    match /mentions/{mention} {
+      allow read: if true;
+      allow write: if request.auth!= null;
+    }
+        // ⭐ [Titi Star: إضافة البحث]: السماح بقراءة الأغاني للبحث
+    match /songs/{songId} {
+      allow read: if true;
+      allow write: if request.auth!= null;
+    }
+
+    // ملفات المستخدمين (بدون أي تغيير)
+    match /users/{userId} {
+      // السماح بالقراءة للجميع (عشان البروفايلات تظهر)
+      allow read: if true;
+
+      // الكتابة فقط لصاحب الحساب، أو إذا كان مستخدم جديد + السماح بتعديل العداد
+      allow create: if request.auth!= null && (request.auth.uid == userId ||!exists(/databases/$(database)/documents/users/$(userId)));
+allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth!= null && request.auth.uid == userId;
+
+      // السماح بالوصول لمجموعة الإعجابات داخل ملف المستخدم
+      match /likedPosts/{postId} {
+        // [Tini - Liked Videos Privacy]: القراءة للمالك دائماً، وللآخرين عند اختيار "الجميع" فقط.
+        // الحسابات التي لم تضبط الإعداد تبقى على "لك فقط".
+        allow read: if request.auth != null && (
+          request.auth.uid == userId
+          || (get(/databases/$(database)/documents/users/$(userId)).data.get('likedVideosPrivacy', 'only_me') == 'everyone'
+            && (get(/databases/$(database)/documents/users/$(userId)).data.get('isPrivate', false) != true
+              || exists(/databases/$(database)/documents/users/$(userId)/followers/$(request.auth.uid))))
+        );
+        // الإعجاب وإلغاؤه والتعديل والحذف لصاحب الحساب وحده كما في القاعدة الأصلية.
+        allow write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // ⭐ [Titi Star]: السماح بالوصول لمجموعة المفضلة داخل ملف المستخدم (الإصلاح الجديد)
+
+match /favorites/{postId} {
+  // [Tini - Favorite Videos Privacy]:
+  // المالك يستطيع القراءة دائماً.
+  // الزوار يستطيعون القراءة فقط عند اختيار "الجميع".
+  // الحسابات القديمة تبقى على "لك فقط".
+  allow read: if request.auth != null && (
+    request.auth.uid == userId
+    || (
+      get(/databases/$(database)/documents/users/$(userId)).data.get('favoriteVideosPrivacy', 'only_me') == 'everyone'
+      && (
+        get(/databases/$(database)/documents/users/$(userId)).data.get('isPrivate', false) != true
+        || exists(/databases/$(database)/documents/users/$(userId)/followers/$(request.auth.uid))
+      )
+    )
+  );
+
+  // الإضافة والحذف والتعديل لصاحب الحساب فقط.
+  allow write: if request.auth != null && request.auth.uid == userId;
+}
+
+            // ⭐ [Titi Star: ثيمات الجروبات الخاصة - كل يوزر ثيمو لحالو]
+      match /groupThemes/{groupId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+      // ⭐ [Titi Star]: سجل المشاهدة
+      match /watchHistory/{postId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      // [Titi Star]: السماح بالوصول لمجموعة المشاركات داخل ملف المستخدم لضمان تتبعها
+match /sharedPosts/{postId} {
+  allow read: if request.auth != null && (
+    request.auth.uid == userId ||
+    get(/databases/$(database)/documents/users/$(userId)).data.get('isPrivate', false) != true ||
+    exists(/databases/$(database)/documents/users/$(userId)/followers/$(request.auth.uid))
+  );
+
+  allow write: if request.auth != null && request.auth.uid == userId;
+}
+
+            // [Titi Star: حل مشكلة الديو] - السماح للتفاعلات
+      match /interactions/{interactionId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+
+      // [Titi Star: إدارة الأجهزة] - للسماح بقراءة وحذف الأجهزة المسجلة
+      match /activeSessions/{sessionId} {
+        allow read, delete: if request.auth!= null && request.auth.uid == userId;
+        allow create: if request.auth!= null && request.auth.uid == userId;
+      }
+
+      // [Titi Star: سجل تسجيل الدخول - إضافة جديدة للمدينة الحقيقية]
+      match /login_history/{loginId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+
+      // [Titi Star: تنبيهات الأمان] - للسماح بقراءة التنبيهات
+      match /securityAlerts/{alertId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+
+      // [Titi Star]: السماح بالوصول لمجموعة المحادثات والرسائل داخل ملف المستخدم
+      match /chats/{chatId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+
+        match /messages/{messageId} {
+          allow read, write: if request.auth!= null && request.auth.uid == userId;
+        }
+      }
+
+            // [Titi Star Wallet]: السماح بالوصول لمجموعة العمليات داخل ملف المستخدم
+      match /transactions/{transactionId} {
+        allow read: if request.auth!= null && request.auth.uid == userId;
+        allow write: if false; // بس السيرفر يكتب العمليات
+      }
+
+      // [Titi Star Wallet]: السماح بالوصول لطلبات الشراء المعلقة
+      match /pending_purchases/{purchaseId} {
+        allow create: if request.auth!= null && request.auth.uid == userId;
+        allow read, update, delete: if false; // بس السيرفر يعدل
+      }
+            // === Titi Star: إضافة المتابعة ===
+      match /following/{targetId} {
+        allow read: if true;
+        // صاحب القائمة يقدر يضيف/يحذف
+        allow create, delete: if request.auth!= null && request.auth.uid == userId;
+        allow update: if request.auth!= null && request.auth.uid == userId;
+
+        // السماح لصاحب البروفايل المستهدف إنه يحذف نفسه من following المتابع
+        // هذا هو اللي بيخلي زر "إزالة هذا المتابع" يشتغل
+        allow delete: if request.auth!= null && request.auth.uid == targetId;
+      }
+
+            match /followers/{followerId} {
+        allow read: if true;
+        allow write: if request.auth!= null && (request.auth.uid == userId || request.auth.uid == followerId);
+      }
+      match /notificationSettings/{docId} {
+  allow read, write: if request.auth!= null && request.auth.uid == userId;
+}
+      match /hiddenSuggestions/{hiddenId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+      // ⭐ [Titi Star: نظام الحظر] - إصلاح مشكلة الحظر - Two Way
+      match /blocked/{blockedId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+      match /blockedBy/{byId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null; // أي حدا بيقدر يكتب انو حظرك - مشان Two-Way يشتغل
+      }
+            match /feed/{postId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+            match /friendsFeed/{postId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+            // ⭐ [Titi Star: For You] - حظر القناة نهائياً
+      match /blockedChannels/{channelId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+            // ⭐⭐ [Titi Star: For You - الإصلاح الناقص] - لازم تضيف هاد
+      match /hashtagInterests/{interestId} {
+        allow read, write: if request.auth!= null && request.auth.uid == userId;
+      }
+
+      // ⭐ [Titi Star: نظام من زار بروفايلك]
+      match /visits/{visitId} {
+        // صاحب البروفايل بس يلي بيشوف و بيمسح
+        allow read, delete, update: if request.auth!= null && request.auth.uid == userId;
+        // أي حدا مسجل بيقدر يكتب انو زار بروفايلك
+        // والـ visitId لازم يكون نفس اي دي الزائر مشان ما حدا يزور عن حدا تاني
+        allow create, update: if request.auth!= null && request.auth.uid == visitId;
+      }
+    }
+
+        match /chat_rooms/{chatRoomId} {
+  allow read: if request.auth!= null;
+
+  allow create: if request.auth!= null
+                && request.auth.uid in request.resource.data.participants;
+
+  allow update: if request.auth!= null
+                && request.auth.uid in resource.data.participants
+                && request.resource.data.participants == resource.data.participants;
+  allow delete: if request.auth!= null
+                && request.auth.uid in resource.data.participants;
+
+  match /messages/{messageId} {
+    allow read: if request.auth!= null;
+
+    // هون الحماية الصح + منع الحظر
+    allow create: if request.auth!= null
+                  && exists(/databases/$(database)/documents/chat_rooms/$(chatRoomId))
+                  && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants
+                  && request.resource.data.senderId == request.auth.uid
+                  // [Titi Star - Two-Way Block - منع المراسلة بعد الحظر]
+                  &&!exists(/databases/$(database)/documents/users/$(request.auth.uid)/blocked/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0]))
+                  &&!exists(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0])/blocked/$(request.auth.uid))
+                  &&!exists(/databases/$(database)/documents/users/$(request.auth.uid)/blockedBy/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0]))
+                  &&!exists(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0])/blockedBy/$(request.auth.uid))
+                  && (
+                    // 1. لو صديق: مسموح دايماً
+                    get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participantsInfo[request.auth.uid].isFriend == true
+                    ||
+                    // 2. لو مش صديق: لازم canSendMore = true
+                    get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.canSendMore[request.auth.uid] == true
+                  );
+
+    allow delete: if request.auth!= null
+                  && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants;
+        // ✅ NEW - فتح تحديث الصحين + التفاعلات + لون الفقاعة فقط
+    allow update: if request.auth!= null
+                  && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants
+                  && request.resource.data.senderId == resource.data.senderId
+                  && (
+                    request.resource.data.diff(resource.data).changedKeys().hasOnly(['isSeen', 'seen', 'seenAt', 'isDelivered', 'deliveredAt', 'isDeliveredAt', 'delivered'])
+                    ||
+                    request.resource.data.diff(resource.data).changedKeys().hasOnly(['reactions', 'reaction', 'bubbleColor'])
+                    ||
+                    request.resource.data.diff(resource.data).changedKeys().hasOnly(['reactions', 'reaction', 'bubbleColor', 'isSeen', 'seen', 'seenAt', 'isDelivered', 'deliveredAt', 'isDeliveredAt', 'delivered'])
+                  );
+
+    // [Titi Star] عرض مرة واحدة - الدردشات الخاصة فقط
+    // السماح للمستلم بتسجيل فتح الصورة أو الفيديو لمرة واحدة
+    allow update: if request.auth != null
+                  && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants
+                  && resource.data.get('viewOnce', false) == true
+                  && resource.data.senderId != request.auth.uid
+                  && resource.data.type in ['image', 'video']
+                  && resource.data.get('mediaDeleted', false) != true
+                  && resource.data.get('mediaUrl', '') is string
+                  && resource.data.get('mediaUrl', '') != ''
+                  && !(request.auth.uid in resource.data.get('viewedBy', []))
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewedBy'])
+                  && request.resource.data.viewedBy ==
+                     resource.data.get('viewedBy', []).concat([request.auth.uid]);
+
+    // [Titi Star] تنظيف رسالة العرض مرة واحدة بعد المشاهدة
+    // يسمح بتصفير الرابط وتسجيل انتهاء الوسيط بعد أن يشاهده المستلم
+    allow update: if request.auth != null
+                  && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants
+                  && resource.data.get('viewOnce', false) == true
+                  && resource.data.senderId != request.auth.uid
+                  && request.auth.uid in resource.data.get('viewedBy', [])
+                  && resource.data.get('mediaDeleted', false) != true
+                  && resource.data.get('mediaUrl', '') is string
+                  && resource.data.get('mediaUrl', '') != ''
+                  && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mediaUrl', 'mediaDeleted'])
+                  && request.resource.data.mediaUrl == null
+                  && request.resource.data.mediaDeleted == true;
+  }
+}
+
+    // ⭐ [Titi Star: الجروبات - إصلاح PERMISSION_DENIED + حظر + تقييد مؤقت + شاشة الحظر]
+    match /group_chats/{groupId} {
+      allow create: if request.auth != null && request.auth.uid in request.resource.data.members && !(request.auth.uid in request.resource.data.get('banned', []));
+      allow read: if request.auth != null && (request.auth.uid in resource.data.members || request.auth.uid in resource.data.get('banned', []));
+      allow update: if request.auth != null
+              && request.auth.uid in resource.data.members
+              && request.resource.data.createdBy == resource.data.createdBy
+              && (resource.data.createdBy in request.resource.data.members || request.auth.uid == resource.data.createdBy)
+              && (
+                // اي حدا بيقدر يغادر حالو - حتى المالك
+                !(request.auth.uid in request.resource.data.members)
+                ||
+                // تعديل اداري - حظر / ترقية / تقييد
+                (
+                  (request.resource.data.admins == resource.data.admins || request.auth.uid == resource.data.createdBy)
+                  && (request.resource.data.moderators == resource.data.moderators || request.auth.uid == resource.data.createdBy || request.auth.uid in resource.data.admins)
+                )
+                ||
+                // تقييد مؤقت - بس المالك والمسؤول والمشرف يقدرو يعدلو حقل restricted لحالو
+                (
+                  request.resource.data.diff(resource.data).affectedKeys().hasOnly(['restricted'])
+                  && (request.auth.uid == resource.data.createdBy || request.auth.uid in resource.data.admins || request.auth.uid in resource.data.moderators)
+                )
+                ||
+                // فك تقييد تلقائي عند انتهاء المدة - اي عضو مقيد بيقدر يمسح حالو
+                (
+                  request.resource.data.diff(resource.data).affectedKeys().hasOnly(['restricted'])
+                  && request.resource.data.restricted[request.auth.uid] == null
+                )
+              );
+      allow delete: if request.auth != null && resource.data.createdBy == request.auth.uid;
+      match /messages/{messageId} {
+        allow read, write: if request.auth != null && request.auth.uid in get(/databases/$(database)/documents/group_chats/$(groupId)).data.members && !(request.auth.uid in get(/databases/$(database)/documents/group_chats/$(groupId)).data.get('banned', []));
+      }
+    }
+    match /group_invites/{inviteId} {
+      allow read, write: if request.auth != null;
+    }
+    match /users/{userId}/group_invites/{groupId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+
+    // الفيديوهات أو المنشورات (تحديث نهائي لدعم المحذوفات + الأمان)
+    match /posts/{postId} {
+      // القراءة: الكل بيقرا إلا المحذوف - المحذوف بس صاحبه بيقدر يقراه
+      allow read: if resource == null || resource.data.get('isDeleted', false) != true || (request.auth != null && resource.data.uid == request.auth.uid);
+
+      // الإنشاء: بس صاحب الفيديو
+      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
+
+      // التحديث: صاحب الفيديو بيقدر يعدل كلشي (نقل للمحذوفات / استعادة) + أي حدا بيقدر يعدل العدادات فقط
+      allow update: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'views', 'comments', 'shares', 'favoritesCount', 'isDeleted', 'deletedAt', 'expireAt'])
+      );
+
+      // الحذف النهائي: بس صاحب الفيديو
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+
+      // [Tini - Owner Reactions Overlay] - فهرس الإعجابات لكل فيديو.
+      // صاحب الفيديو يرى الأسماء للعرض فوق الفيديو، وصاحب الإعجاب يرى تسجيله فقط.
+      match /likes/{userId} {
+        allow read: if request.auth != null && (
+          request.auth.uid == userId
+          || get(/databases/$(database)/documents/posts/$(postId)).data.uid == request.auth.uid
+        );
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && get(/databases/$(database)/documents/posts/$(postId)).data.get('isDeleted', false) != true
+          && request.resource.data.keys().hasOnly(['uid', 'userName', 'userImage', 'createdAt'])
+          && request.resource.data.uid == userId
+          && request.resource.data.userName is string
+          && request.resource.data.userImage is string
+          && request.resource.data.createdAt == request.time;
+        allow delete: if request.auth != null && request.auth.uid == userId;
+        allow update: if false;
+      }
+
+      // سجلات السيرفر لمنع تكرار إضافة الإعجابات إلى إجمالي البروفايل.
+      match /likeCountEvents/{eventId} {
+        allow read, write: if false;
+      }
+
+      // السماح بالتعليقات داخل كل منشور + حماية الخصوصية [NEW]
+match /comments/{commentId} {
+        allow read: if true;
+        allow create: if request.auth != null
+          && get(/databases/$(database)/documents/posts/$(postId)).data.get('isDeleted', false) != true
+          && get(/databases/$(database)/documents/posts/$(postId)).data.get('commentPrivacy', 'comment_everyone') != 'comment_nobody'
+          && (
+            get(/databases/$(database)/documents/posts/$(postId)).data.get('commentPrivacy', 'comment_everyone') == 'comment_everyone'
+            || request.auth.uid == get(/databases/$(database)/documents/posts/$(postId)).data.uid
+            || (
+              exists(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/posts/$(postId)).data.uid)/followers/$(request.auth.uid))
+              && exists(/databases/$(database)/documents/users/$(request.auth.uid)/followers/$(get(/databases/$(database)/documents/posts/$(postId)).data.uid))
+            )
+          );
+        allow update, delete: if request.auth != null && get(/databases/$(database)/documents/posts/$(postId)).data.get('isDeleted', false) != true;
+
+        match /likedBy/{userId} {
+          allow read: if true;
+          allow create, delete: if request.auth != null && request.auth.uid == userId;
+        }
+        match /dislikedBy/{userId} {
+          allow read: if true;
+          allow create, delete: if request.auth != null && request.auth.uid == userId;
+        }
+      }
+    }
+
+    // الرسائل الخاصة (بدون أي تغيير)
+    match /messages/{messageId} {
+      allow read, write: if request.auth!= null &&
+      (request.auth.uid == resource.data.senderId || resource.data.receiverId == request.auth.uid);
+    }
+
+        // [Titi Star: نظام الإشعارات الجديد - مصحح]
+    match /activities/{activityId} {
+      allow read: if request.auth!= null &&
+        (resource.data.toUid == request.auth.uid || resource.data.fromUid == request.auth.uid);
+      allow create: if request.auth!= null &&
+        request.resource.data.fromUid == request.auth.uid
+        && (request.resource.data.get('type', '') != 'mention'
+            || mentionActivityAllowed(request.resource.data.toUid));
+      // [Tini - Mention Privacy]: منع تحويل نشاط آخر إلى ذكر لتجاوز فحص الإنشاء.
+      // نشاط الذكر القديم يبقى قابلاً للتحديث العادي (مثل seen) دون تغيير طرفيه.
+      allow update: if request.auth!= null &&
+        (resource.data.toUid == request.auth.uid || resource.data.fromUid == request.auth.uid)
+        && (request.resource.data.get('type', '') != 'mention'
+            || (resource.data.get('type', '') == 'mention'
+                && request.resource.data.toUid == resource.data.toUid
+                && request.resource.data.fromUid == resource.data.fromUid));
+allow delete: if request.auth != null && resource.data.toUid == request.auth.uid;
+    }
+        // ⭐ [Titi Star: إضافة الستوري]
+    match /stories/{uid} {
+      allow read: if true;
+
+      match /items/{storyId} {
+        allow read: if true;
+        allow create: if request.auth!= null && request.auth.uid == uid;
+        allow delete: if request.auth!= null && request.auth.uid == uid;
+        // أي حد مسجل بيقدر يعمل update بس عشان يسجل مشاهدة
+        allow update: if request.auth!= null;
+
+        // ✅ [Titi Star: إضافة اللايكات] - السماح باللايك للستوري
+        match /likes/{userId} {
+          allow read: if request.auth!= null;
+          allow create, delete: if request.auth!= null && request.auth.uid == userId;
+        }
+                // ✅ [Titi Star: إضافة المشاهدات]
+        match /views/{viewerId} {
+          allow read: if request.auth!= null && request.auth.uid == uid;
+          allow create: if request.auth!= null && request.auth.uid == viewerId && viewerId!= uid;
+        }
+      }
+    }
+        // ⭐ [Titi Star: العرش] - السماح بقراءة بيانات العرش الحالي للجميع
+    match /throne_data/current {
+      allow read: if true;
+      allow write: if request.auth!= null;
+    }
+
+    // ⭐ [Titi Star]: السماح بالمزايدة على العرش
+    match /throne_bids/{bidId} {
+      allow read: if request.auth!= null;
+      allow create: if request.auth!= null;
+    }
+
+    // ⭐ [Titi Star: بحر الصناديق] - السماح بقراءة الصناديق للجميع
+    match /mystery_boxes/{docId} {
+      allow read: if true;
+      allow write: if request.auth!= null;
+    }
+
+    // ⭐ [Titi Star: الرائج الجديد - الصقه هون]
+    match /trendingFeed/{docId} {
+      allow read: if true;
+      allow write: if false;
+
+      match /posts/{postId} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+
+    // ⭐ [Titi Star: For You - 100 فيديو - إضافة جديدة]
+    match /forYouFeed/{userId} {
+      allow read: if request.auth!= null;
+      allow write: if false; // بس السيرفر بيكتب
+
+      match /posts/{postId} {
+        allow read: if request.auth!= null && request.auth.uid == userId;
+        allow write: if false;
+      }
+    }
+
+        match /userInteractions/{docId} {
+      // التفاعلات +50 / +10 / -20... كلها هون
+      allow create: if request.auth!= null
+                    && request.resource.data.userId == request.auth.uid;
+      allow read, write: if request.auth!= null
+                    && (resource.data.userId == request.auth.uid || request.auth.uid == docId.split('_')[0]);
+    }
+  }
+}

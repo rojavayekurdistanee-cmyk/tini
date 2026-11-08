@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "965066441230",
+    "project_id": "titi-star0",
+    "storage_bucket": "titi-star0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:965066441230:android:9fa56501d770be2bb4725f",
+        "android_client_info": {
+          "package_name": "com.aras.titistar"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "965066441230-t5eromt5n1o4mvouu0at4tu7llf09ufd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aras.titistar",
+            "certificate_hash": "62f0002b9b2afbd74a699161d8142f31f1556f82"
+          }
+        },
+        {
+          "client_id": "965066441230-tha018u6nondvcsmsrtdu4thoob7m854.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAej-USiSl0z9IG0Kn8vnJh234dJpy0kVc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "965066441230-tha018u6nondvcsmsrtdu4thoob7m854.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
