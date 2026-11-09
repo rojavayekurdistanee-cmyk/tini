@@ -114,7 +114,18 @@ class _PendingUpload {
   final String type;
   final String? fileName;
   bool failed;
-  _PendingUpload({required this.id, required this.localPath, required this.type, this.fileName, this.failed = false});
+  // [Tini - send result] احتفظ بخيارات الملف الأصلي عند تعذّر حفظ الرسالة.
+  final bool viewOnce;
+  final bool isVideoNote;
+  final bool isVideoForce;
+  final String caption;
+  final Duration? voiceDuration;
+  final List<int>? voiceWaveform;
+  final List<Map<String, dynamic>>? albumItems;
+  _PendingUpload({required this.id, required this.localPath, required this.type, this.fileName,
+    this.failed = false, this.viewOnce = false, this.isVideoNote = false,
+    this.isVideoForce = false, this.caption = '', this.voiceDuration, this.voiceWaveform,
+    this.albumItems});
 }
 
 class _ChatScreenState extends State<ChatScreen> {
@@ -176,6 +187,51 @@ class _ChatScreenState extends State<ChatScreen> {
           : 'تعذر إرسال الوسائط. حاول مجددًا.'),
       backgroundColor: const Color(0xFFE53935),
     ));
+  }
+
+  // [Tini - send result] لا نخلط رفض الخصوصية مع فشل التحميل/الحفظ.
+  void _showPrivateSendFailure(ChatFailureReason? reason,
+      {String action = 'إرسال الرسالة', VoidCallback? onRetry}) {
+    if (!mounted) return;
+    final privacy = reason?.isPrivacyRestriction ?? false;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: const Color(0xFF1A222C),
+      duration: const Duration(seconds: 4),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      content: Row(children: [
+        Icon(privacy ? Icons.shield_outlined : Icons.error_outline,
+            color: privacy ? Colors.white54 : const Color(0xFFE53935)),
+        const SizedBox(width: 12),
+        Expanded(child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(privacy ? 'خصوصية المراسلة' : 'تعذّر $action',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 3),
+            Text(reason?.userMessage ?? 'تعذّر إتمام العملية. تحقق من اتصالك وحاول مرة أخرى.',
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          ],
+        )),
+      ]),
+      action: !privacy && onRetry != null
+          ? SnackBarAction(label: 'إعادة المحاولة', textColor: Colors.teal,
+              onPressed: onRetry)
+          : null,
+    ));
+  }
+
+  // يفرّغ شريط الإدخال نصه فور الضغط على إرسال؛ نعيده إذا رفض Firestore الحفظ.
+  void _restoreFailedPrivateText(String text) {
+    if (!mounted || text.isEmpty) return;
+    final current = _messageController.text;
+    final restored = current.trim().isEmpty ? text : '$text\n$current';
+    _messageController.value = TextEditingValue(
+      text: restored, selection: TextSelection.collapsed(offset: restored.length));
   }
 
 
@@ -299,30 +355,34 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Future<void> _sendTextMessage(String currentUserId) async {
-    if (FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+  Future<void> _sendTextMessage(String currentUserId, String submittedText) async {
+    final text = submittedText.trim();
+    if (text.isEmpty) return;
+    // TitiInputBar.clear() happens immediately after calling onSendText.
+    await Future<void>.value();
+    if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
     final blockedSet = Provider.of<custom.AuthProvider>(context, listen: false).blockedUsersSet;
-    if (blockedSet.contains(widget.viewedUid)) return;
-    if (_messageController.text.trim().isEmpty) return;
-    String text = _messageController.text.trim();
-    _messageController.clear();
-
-    final provider = Provider.of<ChatProvider>(context, listen: false);
-
-    Map<String, dynamic>? replyData;
-    if (_replyingTo!= null) {
-      replyData = {
-        'messageId': _replyingTo!['messageId'],
-        'text': _replyingTo!['text'],
-        'type': _replyingTo!['type'],
-        'senderId': _replyingTo!['senderId'],
-        'mediaUrl': _replyingTo!['mediaUrl'],
-        ...AudienceMessagePolicy.sourceFields(_replyingTo!),
-      };
-      setState(() => _replyingTo = null);
+    if (blockedSet.contains(widget.viewedUid)) {
+      _restoreFailedPrivateText(text);
+      _showPrivateSendFailure(ChatFailureReason.blocked);
+      return;
     }
 
-    await provider.sendMessage(
+    final provider = Provider.of<ChatProvider>(context, listen: false);
+    final selectedReply = _replyingTo;
+    Map<String, dynamic>? replyData;
+    if (selectedReply != null) {
+      replyData = {
+        'messageId': selectedReply['messageId'],
+        'text': selectedReply['text'],
+        'type': selectedReply['type'],
+        'senderId': selectedReply['senderId'],
+        'mediaUrl': selectedReply['mediaUrl'],
+        ...AudienceMessagePolicy.sourceFields(selectedReply),
+      };
+    }
+
+    final result = await provider.sendMessageWithReason(
       roomId: _chatRoomId,
       senderId: currentUserId,
       receiverId: widget.viewedUid,
@@ -331,6 +391,15 @@ class _ChatScreenState extends State<ChatScreen> {
       isFriend: widget.isFriend,
       replyTo: replyData,
     );
+    if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+    if (!result.isSuccess) {
+      _restoreFailedPrivateText(text);
+      _showPrivateSendFailure(result.failureReason);
+      return;
+    }
+    if (selectedReply != null && identical(_replyingTo, selectedReply)) {
+      setState(() => _replyingTo = null);
+    }
     _scrollToBottom();
   }
 
@@ -341,23 +410,31 @@ class _ChatScreenState extends State<ChatScreen> {
     for (int i = 0; i < paths.length; i++) {
       final path = paths[i];
       final file = File(path);
-      if (!await file.exists()) continue;
+      if (!await file.exists()) {
+        _notifyMediaUploadError(StateError('الملف غير موجود: $path'));
+        continue;
+      }
 
       final isVideo = isVideoNote || isVideoForce || path.toLowerCase().endsWith('.mp4') ||
           path.toLowerCase().endsWith('.mov') ||
           path.toLowerCase().endsWith('.avi');
 
       final type = isVideoNote ? 'video_note' : (isVideo ? 'video' : 'image');
-      final pendingId = '${DateTime.now().millisecondsSinceEpoch}_$i';
+      final pendingId = '${DateTime.now().microsecondsSinceEpoch}_$i';
 
       if (!mounted) return;
-      _pendingUploads.insert(0, _PendingUpload(id: pendingId, localPath: path, type: type));
+      final pending = _PendingUpload(
+        id: pendingId, localPath: path, type: type, viewOnce: viewOnce,
+        isVideoNote: isVideoNote, caption: caption, isVideoForce: isVideoForce,
+      );
+      _pendingUploads.insert(0, pending);
       _pendingUploadsRevision.value++;
 
-      final fileName = '${DateTime.now().millisecondsSinceEpoch}_$i${isVideo? '.mp4' : '.jpg'}';
+      final fileName = '${DateTime.now().microsecondsSinceEpoch}_$i${isVideo? '.mp4' : '.jpg'}';
       final objectName = 'chat_media/$_chatRoomId/$fileName';
       final r2 = R2Service();
 
+      var sent = false;
       try {
         await _validateChatMediaSize(file, isVideo);
         File fileToUpload = file;
@@ -368,20 +445,20 @@ class _ChatScreenState extends State<ChatScreen> {
         final url = await r2.uploadFile(fileToUpload, objectName);
         if (FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
 
+        final selectedReply = _replyingTo;
         Map<String, dynamic>? replyData;
-        if (_replyingTo!= null) {
+        if (selectedReply != null) {
           replyData = {
-            'messageId': _replyingTo!['messageId'],
-            'text': _replyingTo!['text'],
-            'type': _replyingTo!['type'],
-            'senderId': _replyingTo!['senderId'],
-            'mediaUrl': _replyingTo!['mediaUrl'],
-        ...AudienceMessagePolicy.sourceFields(_replyingTo!),
+            'messageId': selectedReply['messageId'],
+            'text': selectedReply['text'],
+            'type': selectedReply['type'],
+            'senderId': selectedReply['senderId'],
+            'mediaUrl': selectedReply['mediaUrl'],
+            ...AudienceMessagePolicy.sourceFields(selectedReply),
           };
-          setState(() => _replyingTo = null);
         }
 
-        await provider.sendMessage(
+        final result = await provider.sendMessageWithReason(
           roomId: _chatRoomId,
           senderId: currentUserId,
           receiverId: widget.viewedUid,
@@ -392,15 +469,111 @@ class _ChatScreenState extends State<ChatScreen> {
           replyTo: replyData,
           viewOnce: viewOnce, // [عرض مرة واحدة - الخاص]
         );
+        if (!result.isSuccess) {
+          if (mounted && FirebaseAuth.instance.currentUser?.uid == currentUserId) {
+            pending.failed = true;
+            _showPrivateSendFailure(result.failureReason, action: 'إرسال الوسائط');
+          }
+          continue;
+        }
+        sent = true;
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+        if (selectedReply != null && identical(_replyingTo, selectedReply)) {
+          setState(() => _replyingTo = null);
+        }
         _scrollToBottom();
       } catch (e) {
         debugPrint('Upload error: $e');
-        _notifyMediaUploadError(e);
+        pending.failed = true;
+        if (mounted && FirebaseAuth.instance.currentUser?.uid == currentUserId) {
+          _notifyMediaUploadError(e);
+        }
       } finally {
         if (mounted) {
-          _pendingUploads.removeWhere((p) => p.id == pendingId);
+          // عند فشل الحفظ، نُبقي الملف المحلي وزر إعادة المحاولة.
+          if (sent || FirebaseAuth.instance.currentUser?.uid != currentUserId) {
+            _pendingUploads.removeWhere((p) => p.id == pendingId);
+          }
           _pendingUploadsRevision.value++;
         }
+      }
+    }
+  }
+
+  // لا نحذف التسجيل المحلي إن فشل الرفع أو رفضت قواعد المراسلة حفظه.
+  Future<void> _sendPrivateVoice(String path, Duration duration, List<int> waveform,
+      String currentUserId, {_PendingUpload? retryPending}) async {
+    if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+    final pending = retryPending ?? _PendingUpload(
+      id: 'voice_${DateTime.now().microsecondsSinceEpoch}', localPath: path,
+      type: 'audio', voiceDuration: duration, voiceWaveform: waveform);
+    if (retryPending == null) _pendingUploads.insert(0, pending);
+    pending.failed = false;
+    _pendingUploadsRevision.value++;
+    var sent = false;
+    try {
+      final file = File(path);
+      if (!await file.exists()) throw StateError('التسجيل الصوتي غير موجود');
+      final compressedFile = await VideoProcessor.compressChatVoice(file);
+      final fileName = 'voice_${DateTime.now().microsecondsSinceEpoch}.m4a';
+      final objectName = 'chat_media/$_chatRoomId/$fileName';
+      final url = await R2Service().uploadFile(compressedFile, objectName);
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+      final result = await context.read<ChatProvider>().sendMessageWithReason(
+        roomId: _chatRoomId,
+        senderId: currentUserId,
+        receiverId: widget.viewedUid,
+        type: 'audio',
+        mediaUrl: url,
+        isFriend: widget.isFriend,
+        durationSeconds: duration.inSeconds,
+        extraData: {'waveform': waveform},
+      );
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+      if (!result.isSuccess) {
+        pending.failed = true;
+        _showPrivateSendFailure(result.failureReason, action: 'إرسال التسجيل الصوتي');
+        return;
+      }
+      sent = true;
+      _scrollToBottom();
+    } catch (e) {
+      debugPrint('Private voice upload error: $e');
+      if (mounted && FirebaseAuth.instance.currentUser?.uid == currentUserId) {
+        pending.failed = true;
+        _showPrivateSendFailure(ChatFailureReason.technicalError, action: 'إرسال التسجيل الصوتي');
+      }
+    } finally {
+      if (mounted) {
+        if (sent || FirebaseAuth.instance.currentUser?.uid != currentUserId) {
+          _pendingUploads.removeWhere((p) => p.id == pending.id);
+        }
+        _pendingUploadsRevision.value++;
+      }
+    }
+  }
+
+  Future<void> _sendPrivateLocation(TiniFixedLocation location, String uid) async {
+    if (!mounted || FirebaseAuth.instance.currentUser?.uid != uid) return;
+    try {
+      final result = await context.read<ChatProvider>().sendMessageWithReason(
+        roomId: _chatRoomId, senderId: uid,
+        receiverId: widget.viewedUid, type: 'location', text: location.url,
+        isFriend: widget.isFriend,
+        extraData: {'latitude': location.latitude, 'longitude': location.longitude,
+          'locationName': location.label},
+      );
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uid) return;
+      if (result.isSuccess) {
+        _scrollToBottom();
+      } else {
+        _showPrivateSendFailure(result.failureReason, action: 'إرسال الموقع',
+          onRetry: () { _sendPrivateLocation(location, uid); });
+      }
+    } catch (e) {
+      if (mounted && FirebaseAuth.instance.currentUser?.uid == uid) {
+        _showPrivateSendFailure(ChatFailureReason.technicalError, action: 'إرسال الموقع',
+          onRetry: () { _sendPrivateLocation(location, uid); });
       }
     }
   }
@@ -422,7 +595,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final objectName = 'private_media/$_chatRoomId/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
       final url = await R2Service().uploadDocument(file, objectName);
       if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
-      final success = await context.read<ChatProvider>().sendMessage(
+      final result = await context.read<ChatProvider>().sendMessageWithReason(
         roomId: _chatRoomId,
         senderId: uploadingUid,
         receiverId: widget.viewedUid,
@@ -430,7 +603,14 @@ class _ChatScreenState extends State<ChatScreen> {
         isFriend: widget.isFriend,
         extraData: {'fileSize': size},
       );
-      if (!success) throw StateError('تعذر حفظ الرسالة');
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
+      if (!result.isSuccess) {
+        if (mounted) {
+          setState(() => pending.failed = true);
+          _showPrivateSendFailure(result.failureReason, action: 'إرسال المستند');
+        }
+        return;
+      }
       if (mounted) {
         setState(() => _pendingUploads.removeWhere((p) => p.id == pending.id));
         _scrollToBottom();
@@ -453,7 +633,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // رفع عدة وسائط ثم حفظها برسالة واحدة، مع الإبقاء على إرسال العنصر الواحد كما هو.
   Future<void> _sendPrivateMediaAlbum(List<Map<String, dynamic>> items) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null || items.isEmpty) return;
+    if (!mounted || uid == null || items.isEmpty) return;
     if (items.length == 1 || items.any((e) => e['viewOnce'] == true || e['isVideoNote'] == true)) {
       for (final item in items) {
         final path = item['path']?.toString();
@@ -470,8 +650,13 @@ class _ChatScreenState extends State<ChatScreen> {
         firstPathLower.endsWith('.mp4') ||
         firstPathLower.endsWith('.mov') ||
         firstPathLower.endsWith('.avi');
-    if (mounted) setState(() => _pendingUploads.insert(0,
-      _PendingUpload(id: pendingId, localPath: firstPath, type: firstIsVideo ? 'video' : 'image')));
+    final pending = _PendingUpload(
+      id: pendingId, localPath: firstPath,
+      type: firstIsVideo ? 'video' : 'image',
+      albumItems: items.map((item) => Map<String, dynamic>.from(item)).toList(growable: false),
+    );
+    if (mounted) setState(() => _pendingUploads.insert(0, pending));
+    var sent = false;
     try {
       for (var i = 0; i < items.length; i++) {
         final path = items[i]['path']?.toString() ?? '';
@@ -498,24 +683,42 @@ class _ChatScreenState extends State<ChatScreen> {
         ...AudienceMessagePolicy.sourceFields(_replyingTo!),
         };
       }
-      final success = await provider.sendMessage(
+      final selectedReply = _replyingTo;
+      final result = await provider.sendMessageWithReason(
         roomId: _chatRoomId, senderId: uid, receiverId: widget.viewedUid,
         type: 'album', isFriend: widget.isFriend, replyTo: replyData,
         text: items.map((e) => (e['caption'] ?? '').toString()).where((s) => s.isNotEmpty).join(' '),
         extraData: {'mediaItems': uploaded},
       );
-      if (!success) throw StateError('تعذر حفظ الرسالة');
-      if (mounted && replyData != null) setState(() => _replyingTo = null);
+      if (!result.isSuccess) {
+        if (mounted && FirebaseAuth.instance.currentUser?.uid == uid) {
+          pending.failed = true;
+          _showPrivateSendFailure(result.failureReason, action: 'إرسال مجموعة الوسائط');
+        }
+        return;
+      }
+      sent = true;
+      if (mounted && replyData != null && identical(_replyingTo, selectedReply)) {
+        setState(() => _replyingTo = null);
+      }
       _scrollToBottom();
     } catch (e) {
       debugPrint('Private album upload error: $e');
-      if (e.toString().contains('250 MB') || e.toString().contains('25 MB')) {
-        _notifyMediaUploadError(e);
-      } else if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: const Text('تعذر إرسال مجموعة الوسائط. حاول مجددًا.'),
-          action: SnackBarAction(label: 'إعادة المحاولة', onPressed: () { _sendPrivateMediaAlbum(items); })));
+      pending.failed = true;
+      if (mounted && FirebaseAuth.instance.currentUser?.uid == uid) {
+        if (e.toString().contains('250 MB') || e.toString().contains('25 MB')) {
+          _notifyMediaUploadError(e);
+        } else {
+          _showPrivateSendFailure(ChatFailureReason.technicalError, action: 'إرسال مجموعة الوسائط');
+        }
+      }
     } finally {
-      if (mounted) setState(() => _pendingUploads.removeWhere((p) => p.id == pendingId));
+      if (mounted) {
+        if (sent || FirebaseAuth.instance.currentUser?.uid != uid) {
+          _pendingUploads.removeWhere((p) => p.id == pendingId);
+        }
+        _pendingUploadsRevision.value++;
+      }
     }
   }
 
@@ -819,20 +1022,21 @@ class _ChatScreenState extends State<ChatScreen> {
                               if (FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
                               // ← السطر المضاف: افحص الصداقة الحقيقية
                               final isForwardFriend = await provider.checkIfFriend(currentUserId, uid);
-                              final roomId = await provider.startChat(
+                              if (!AudienceMessagePolicy.canView(message)) return;
+                              final startResult = await provider.startChatWithReason(
                                 viewedUid: uid,
                                 displayFullName: name,
                                 displayProfileImg: img,
                                 isFriend: isForwardFriend,
                               );
-                              if (roomId.isEmpty || FirebaseAuth.instance.currentUser?.uid != currentUserId ||
-                                  !AudienceMessagePolicy.canView(message)) {
-                                if (mounted) ScaffoldMessenger.of(this.context).showSnackBar(
-                                  const SnackBar(content: Text('تعذر فتح المحادثة لإعادة التوجيه')));
+                              if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+                              if (!startResult.isSuccess || startResult.value == null) {
+                                _showPrivateSendFailure(startResult.failureReason, action: 'فتح المحادثة لإعادة التوجيه');
                                 return;
                               }
-                              final success = await provider.sendMessage(
-                                roomId: roomId,
+                              if (!AudienceMessagePolicy.canView(message)) return;
+                              final result = await provider.sendMessageWithReason(
+                                roomId: startResult.value!,
                                 senderId: currentUserId,
                                 receiverId: uid,
                                 type: message['type'],
@@ -841,9 +1045,13 @@ class _ChatScreenState extends State<ChatScreen> {
                                 extraData: AudienceMessagePolicy.sourceFields(message),
                                 isFriend: isForwardFriend,
                               );
-                              if (mounted) ScaffoldMessenger.of(this.context).showSnackBar(
-                                SnackBar(content: Text(success ? 'تم إعادة التوجيه' : 'تعذرت إعادة التوجيه'),
-                                    backgroundColor: success ? Colors.teal : const Color(0xFFE53935)));
+                              if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+                              if (result.isSuccess) {
+                                ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
+                                  content: Text('تمت إعادة التوجيه'), backgroundColor: Color(0xFF1A222C)));
+                              } else {
+                                _showPrivateSendFailure(result.failureReason, action: 'إعادة التوجيه');
+                              }
                             },
                           );
                         },
@@ -1721,6 +1929,50 @@ appBar: AppBar(
                                 ),
                               );
                             }
+                            if (pending.type == 'audio') {
+                              return Padding(
+                                key: ValueKey(pending.id),
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: Container(
+                                    constraints: const BoxConstraints(maxWidth: 270),
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: titiTeal.withValues(alpha: 0.7),
+                                      borderRadius: BorderRadius.circular(15)),
+                                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                      const Icon(Icons.mic, color: Colors.white),
+                                      const SizedBox(width: 10),
+                                      Flexible(child: pending.failed
+                                        ? TextButton.icon(
+                                            onPressed: () {
+                                              final uid = FirebaseAuth.instance.currentUser?.uid;
+                                              if (uid != null && pending.voiceDuration != null && pending.voiceWaveform != null) {
+                                                _sendPrivateVoice(pending.localPath,
+                                                  pending.voiceDuration!, pending.voiceWaveform!, uid,
+                                                  retryPending: pending);
+                                              }
+                                            },
+                                            icon: const Icon(Icons.refresh, color: Colors.white, size: 16),
+                                            label: const Text('فشل الإرسال - إعادة المحاولة',
+                                              style: TextStyle(color: Colors.white, fontSize: 12)),
+                                          )
+                                        : const Text('جارٍ إرسال التسجيل الصوتي...',
+                                            style: TextStyle(color: Colors.white, fontSize: 12))),
+                                      if (pending.failed) IconButton(
+                                        tooltip: 'إزالة التسجيل',
+                                        icon: const Icon(Icons.close, color: Colors.white70, size: 18),
+                                        onPressed: () {
+                                          _pendingUploads.removeWhere((p) => p.id == pending.id);
+                                          _pendingUploadsRevision.value++;
+                                        },
+                                      ),
+                                    ]),
+                                  ),
+                                ),
+                              );
+                            }
                             final bool isVideo = pending.type == 'video' || pending.type == 'video_note';
                             Widget preview;
                             if (isVideo) {
@@ -1773,14 +2025,48 @@ appBar: AppBar(
                                               color: Colors.black45,
                                               borderRadius: BorderRadius.circular(12),
                                             ),
-                                            child: const Column(
-                                              mainAxisAlignment: MainAxisAlignment.center,
-                                              children: [
-                                                CircularProgressIndicator(color: Colors.white),
-                                                SizedBox(height: 8),
-                                                Text('جاري الإرسال...', style: TextStyle(color: Colors.white, fontSize: 12)),
-                                              ],
-                                            ),
+                                            child: pending.failed
+                                              ? Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: [
+                                                    TextButton.icon(
+                                                      onPressed: () async {
+                                                        final uid = FirebaseAuth.instance.currentUser?.uid;
+                                                        if (uid == null) return;
+                                                        _pendingUploads.removeWhere((p) => p.id == pending.id);
+                                                        _pendingUploadsRevision.value++;
+                                                        if (pending.albumItems != null) {
+                                                          await _sendPrivateMediaAlbum(pending.albumItems!);
+                                                        } else {
+                                                          await _sendMediaMessages([pending.localPath], uid,
+                                                            viewOnce: pending.viewOnce,
+                                                            isVideoNote: pending.isVideoNote,
+                                                            caption: pending.caption,
+                                                            isVideoForce: pending.isVideoForce);
+                                                        }
+                                                      },
+                                                      icon: const Icon(Icons.refresh, color: Colors.white),
+                                                      label: const Text('إعادة المحاولة',
+                                                        style: TextStyle(color: Colors.white)),
+                                                    ),
+                                                    TextButton(
+                                                      onPressed: () {
+                                                        _pendingUploads.removeWhere((p) => p.id == pending.id);
+                                                        _pendingUploadsRevision.value++;
+                                                      },
+                                                      child: const Text('إزالة',
+                                                        style: TextStyle(color: Colors.white70)),
+                                                    ),
+                                                  ],
+                                                )
+                                              : const Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: [
+                                                    CircularProgressIndicator(color: Colors.white),
+                                                    SizedBox(height: 8),
+                                                    Text('جاري الإرسال...', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                                  ],
+                                                ),
                                           ),
                                         ],
                                       ),
@@ -2075,40 +2361,20 @@ appBar: AppBar(
                                 await _sendPrivateMediaAlbum([{'path': path, 'caption': caption, 'isVideo': isVideo}]);
                               },
                               onSendText: (text) {
-                                _sendTextMessage(currentUserId);
+                                _sendTextMessage(currentUserId, text);
                               },
                               onSendVoice: (path, duration, waveform) async {
-                                final file = File(path);
-                                if (!await file.exists()) return;
-                                final compressedFile = await VideoProcessor.compressChatVoice(file);
-                                final fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-                                final objectName = 'chat_media/$_chatRoomId/$fileName';
-                                final r2 = R2Service();
-                                final url = await r2.uploadFile(compressedFile, objectName);
-                                if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
-                                final provider = Provider.of<ChatProvider>(context, listen: false);
-                                await provider.sendMessage(
-                                  roomId: _chatRoomId,
-                                  senderId: FirebaseAuth.instance.currentUser?.uid ?? currentUserId,
-                                  receiverId: widget.viewedUid,
-                                  type: 'audio',
-                                  mediaUrl: url,
-                                  isFriend: widget.isFriend,
-                                  durationSeconds: duration.inSeconds,
-                                  extraData: {'waveform': waveform},
-                                );
-                                _scrollToBottom();
+                                await _sendPrivateVoice(path, duration, waveform, currentUserId);
                               },
                               onPickLocation: () async {
                                 try {
                                   final loc = await TiniChatAttachments.pickLocation(context);
                                   if (loc == null || !mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
-                                  await context.read<ChatProvider>().sendMessage(
-                                    roomId: _chatRoomId, senderId: FirebaseAuth.instance.currentUser?.uid ?? currentUserId,
-                                    receiverId: widget.viewedUid, type: 'location', text: loc.url,
-                                    isFriend: widget.isFriend, extraData: {'latitude': loc.latitude, 'longitude': loc.longitude, 'locationName': loc.label},
-                                  );
-                                } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر إرسال الموقع: $e'))); }
+                                  await _sendPrivateLocation(loc, currentUserId);
+                                } catch (e) {
+                                  if (mounted) _showPrivateSendFailure(ChatFailureReason.technicalError,
+                                    action: 'إرسال الموقع');
+                                }
                               },
                               onPickDocument: () async {
                                 if (_pickingPrivateDocument) return;

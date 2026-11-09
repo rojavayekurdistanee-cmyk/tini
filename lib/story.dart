@@ -435,99 +435,165 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
     });
   }
 
+  bool _sendingStoryMessage = false;
+
+  // إشعار نتيجة الرد لا يتحول إلى نجاح إلا بعد تأكيد حفظ الرسالة.
+  void _showStorySendFailure(ChatFailureReason? reason) {
+    if (!mounted) return;
+    final privacy = reason?.isPrivacyRestriction ?? false;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: kSurface,
+      duration: const Duration(seconds: 4),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      content: Row(children: [
+        Icon(privacy ? Icons.shield_outlined : Icons.error_outline,
+          color: privacy ? Colors.white54 : kErrorRed),
+        const SizedBox(width: 12),
+        Expanded(child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(privacy ? 'خصوصية المراسلة' : 'تعذّر إرسال الرد',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 3),
+            Text(reason?.userMessage ?? 'تعذّر إتمام العملية. تحقق من اتصالك وحاول مرة أخرى.',
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          ],
+        )),
+      ]),
+    ));
+  }
+
+  void _showStorySendSuccess() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: kSurface,
+      duration: Duration(seconds: 2),
+      content: Row(children: [
+        Icon(Icons.check_circle_outline, color: Colors.teal),
+        SizedBox(width: 10),
+        Text('تم إرسال الرد', style: TextStyle(color: Colors.white)),
+      ]),
+    ));
+  }
+
   // ✅ إرسال رد - مع بريفيو الستوري
   Future<void> _sendReply() async {
-    if (!_canViewStory) return;
+    if (!_canViewStory || _sendingStoryMessage) return;
     final text = _replyController.text.trim();
     if (text.isEmpty) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-
-    final storyId = widget.stories[currentIndex].id;
-    final story = widget.stories[currentIndex].data() as Map<String, dynamic>;
-    final provider = Provider.of<ChatProvider>(context, listen: false);
-
-    List<String> ids = [uid, widget.ownerUid];
-    ids.sort();
-    final roomId = ids.join('_');
-
-    // ابدأ الشات
-    await provider.startChat(
-      viewedUid: widget.ownerUid,
-      displayFullName: story['fullName']?? '',
-      displayProfileImg: story['profileImg']?? '',
-      isFriend: true,
-    );
-
-    // ابعت الرسالة مع replyTo = الستوري
-    if (!_canViewStory || uid != FirebaseAuth.instance.currentUser?.uid) return;
-    await provider.sendMessage(
-      roomId: roomId,
-      senderId: uid,
-      receiverId: widget.ownerUid,
-      type: 'text',
-      text: text,
-      isFriend: true,
-      replyTo: {
-        'messageId': storyId,
-        'sourceType': 'story',
-        'sourceOwnerUid': widget.ownerUid,
-        'sourceStoryId': storyId,
-        'text': '',
-        'type': story['type'],
-        'senderId': widget.ownerUid,
-        'mediaUrl': story['mediaUrl'],
-      },
-    );
-
-    _replyController.clear();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم الإرسال'), duration: Duration(seconds: 1), backgroundColor: Color(0xFF009688)),
+    _sendingStoryMessage = true;
+    try {
+      final storyId = widget.stories[currentIndex].id;
+      final story = widget.stories[currentIndex].data() as Map<String, dynamic>;
+      final provider = Provider.of<ChatProvider>(context, listen: false);
+      final isActuallyFriend = await provider.checkIfFriend(uid, widget.ownerUid);
+      if (!mounted || !_canViewStory || uid != FirebaseAuth.instance.currentUser?.uid) return;
+      // ابدأ الشات
+      final startResult = await provider.startChatWithReason(
+        viewedUid: widget.ownerUid,
+        displayFullName: story['fullName']?? '',
+        displayProfileImg: story['profileImg']?? '',
+        isFriend: isActuallyFriend,
       );
+      if (!mounted || !_canViewStory || uid != FirebaseAuth.instance.currentUser?.uid) return;
+      if (!startResult.isSuccess || startResult.value == null) {
+        _showStorySendFailure(startResult.failureReason);
+        return;
+      }
+
+      // ابعت الرسالة مع replyTo = الستوري
+      final result = await provider.sendMessageWithReason(
+        roomId: startResult.value!,
+        senderId: uid,
+        receiverId: widget.ownerUid,
+        type: 'text',
+        text: text,
+        isFriend: isActuallyFriend,
+        replyTo: {
+          'messageId': storyId,
+          'sourceType': 'story',
+          'sourceOwnerUid': widget.ownerUid,
+          'sourceStoryId': storyId,
+          'text': '',
+          'type': story['type'],
+          'senderId': widget.ownerUid,
+          'mediaUrl': story['mediaUrl'],
+        },
+      );
+      if (!mounted || uid != FirebaseAuth.instance.currentUser?.uid) return;
+      if (!result.isSuccess) {
+        _showStorySendFailure(result.failureReason);
+        return;
+      }
+      if (_replyController.text.trim() == text) _replyController.clear();
+      _showStorySendSuccess();
+    } catch (e) {
+      if (mounted) _showStorySendFailure(ChatFailureReason.technicalError);
+    } finally {
+      _sendingStoryMessage = false;
     }
   }
 
   // ✅ NEW: إرسال إيموجي كـ رد
   Future<void> _sendEmojiReaction(String emoji) async {
-    if (!_canViewStory) return;
+    if (!_canViewStory || _sendingStoryMessage) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-    final storyId = widget.stories[currentIndex].id;
-    final story = widget.stories[currentIndex].data() as Map<String, dynamic>;
-    final provider = Provider.of<ChatProvider>(context, listen: false);
-    List<String> ids = [uid, widget.ownerUid]..sort();
-    final roomId = ids.join('_');
-    await provider.startChat(
-      viewedUid: widget.ownerUid,
-      displayFullName: story['fullName']?? '',
-      displayProfileImg: story['profileImg']?? '',
-      isFriend: true,
-    );
-    if (!_canViewStory || uid != FirebaseAuth.instance.currentUser?.uid) return;
-    await provider.sendMessage(
-      roomId: roomId,
-      senderId: uid,
-      receiverId: widget.ownerUid,
-      type: 'emoji',
-      text: emoji,
-      isFriend: true,
-      replyTo: {
-        'messageId': storyId,
-        'sourceType': 'story',
-        'sourceOwnerUid': widget.ownerUid,
-        'sourceStoryId': storyId,
-        'text': '',
-        'type': story['type'],
-        'senderId': widget.ownerUid,
-        'mediaUrl': story['mediaUrl'],
-        'thumbnailUrl': story['thumbnailUrl']??'',
-      },
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم الإرسال'), duration: Duration(seconds: 1), backgroundColor: Color(0xFF009688)),
+    _sendingStoryMessage = true;
+    try {
+      final storyId = widget.stories[currentIndex].id;
+      final story = widget.stories[currentIndex].data() as Map<String, dynamic>;
+      final provider = Provider.of<ChatProvider>(context, listen: false);
+      final isActuallyFriend = await provider.checkIfFriend(uid, widget.ownerUid);
+      if (!mounted || !_canViewStory || uid != FirebaseAuth.instance.currentUser?.uid) return;
+      final startResult = await provider.startChatWithReason(
+        viewedUid: widget.ownerUid,
+        displayFullName: story['fullName']?? '',
+        displayProfileImg: story['profileImg']?? '',
+        isFriend: isActuallyFriend,
       );
+      if (!mounted || !_canViewStory || uid != FirebaseAuth.instance.currentUser?.uid) return;
+      if (!startResult.isSuccess || startResult.value == null) {
+        _showStorySendFailure(startResult.failureReason);
+        return;
+      }
+      final result = await provider.sendMessageWithReason(
+        roomId: startResult.value!,
+        senderId: uid,
+        receiverId: widget.ownerUid,
+        type: 'emoji',
+        text: emoji,
+        isFriend: isActuallyFriend,
+        replyTo: {
+          'messageId': storyId,
+          'sourceType': 'story',
+          'sourceOwnerUid': widget.ownerUid,
+          'sourceStoryId': storyId,
+          'text': '',
+          'type': story['type'],
+          'senderId': widget.ownerUid,
+          'mediaUrl': story['mediaUrl'],
+          'thumbnailUrl': story['thumbnailUrl']??'',
+        },
+      );
+      if (!mounted || uid != FirebaseAuth.instance.currentUser?.uid) return;
+      if (result.isSuccess) {
+        _showStorySendSuccess();
+      } else {
+        _showStorySendFailure(result.failureReason);
+      }
+    } catch (e) {
+      if (mounted) _showStorySendFailure(ChatFailureReason.technicalError);
+    } finally {
+      _sendingStoryMessage = false;
     }
   }
 
