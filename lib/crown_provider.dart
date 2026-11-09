@@ -120,7 +120,7 @@ class CrownProvider extends ChangeNotifier {
   String _generateCrownNumber(String uid) {
     // رقم تاج ثابت بناء على UID: TITI-XXXXX
     final hash = uid.hashCode.abs().toString().padLeft(5, '0');
-    return 'TITI-${hash.substring(0, 5)}';
+    return 'Tini-${hash.substring(0, 5)}';
   }
 
   Future<bool> placeBid(int newBid) async {

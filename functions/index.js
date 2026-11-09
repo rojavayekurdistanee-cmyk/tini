@@ -16,7 +16,7 @@ admin.initializeApp();
 const db = getFirestore();
 
 // [Tini: IAP إعدادات] - لازم تغير هذول
-const ANDROID_PACKAGE_NAME = "com.aras.titistar";
+const ANDROID_PACKAGE_NAME = "com.aras.istar";
 const APPLE_SHARED_SECRET = "YOUR_APPLE_SHARED_SECRET_HERE";
 
 // جدول المنتجات: كم عملة مقابل كل productId - السيرفر هو المرجع الوحيد
@@ -64,7 +64,7 @@ exports.sendChatPush = onDocumentCreated({
         // [معاينة الرسائل الخاصة + صورة مرسلة كصورة كبيرة]
         const showPreview = prefs?.preview!== false;
 
-        // [Titi Star] حماية وسائط العرض مرة واحدة في إشعارات الخاص
+        // [Tini Star] حماية وسائط العرض مرة واحدة في إشعارات الخاص
         const isViewOnce = msg.viewOnce === true &&
             (msg.type === 'image' || msg.type === 'video');
 
@@ -241,11 +241,11 @@ exports.requestUserDataExport = onCall({
 });
 
 /**
- * 4. [Tini Wallet] - معالجة شراء عملات Titi بأمان (2nd Gen)
+ * 4. [Tini Wallet] - معالجة شراء عملات Tini بأمان (2nd Gen)
  * يتم تشغيلها تلقائياً عند إنشاء طلب شراء جديد في pending_purchases
  * [تم الإصلاح]: إضافة التحقق الحقيقي مع Google Play و Apple
  */
-exports.processTitiPurchase = onDocumentCreated({
+exports.processTiniPurchase = onDocumentCreated({
     region: "europe-west1",
     document: "users/{userId}/pending_purchases/{purchaseId}"
 }, async (event) => {
@@ -256,7 +256,7 @@ exports.processTitiPurchase = onDocumentCreated({
     const userId = event.params.userId;
     const purchaseId = event.params.purchaseId;
 
-    console.log(`[Titi Wallet] Processing purchase: ${purchaseId} for user: ${userId}`);
+    console.log(`[Tini Wallet] Processing purchase: ${purchaseId} for user: ${userId}`);
 
     const userRef = db.collection('users').doc(userId);
     const purchaseRef = userRef.collection('pending_purchases').doc(purchaseId);
@@ -288,7 +288,7 @@ exports.processTitiPurchase = onDocumentCreated({
                 error: 'Payment verification failed - الفاتورة مزورة أو مستخدمة',
                 processedAt: FieldValue.serverTimestamp()
             });
-            console.log(`[Titi Wallet] Payment verification failed for: ${purchaseId}`);
+            console.log(`[Tini Wallet] Payment verification failed for: ${purchaseId}`);
             return null;
         }
 
@@ -297,12 +297,12 @@ exports.processTitiPurchase = onDocumentCreated({
         // 2. [أمان]: استخدام Transaction لضمان عدم التكرار
         await db.runTransaction(async (transaction) => {
             const userDoc = await transaction.get(userRef);
-            const currentBalance = userDoc.exists? (userDoc.data().titiBalance || 0) : 0;
+            const currentBalance = userDoc.exists? (userDoc.data().tiniBalance || 0) : 0;
             const newBalance = currentBalance + amountToAdd;
 
             // تحديث الرصيد
             transaction.update(userRef, {
-                titiBalance: newBalance,
+                tiniBalance: newBalance,
                 walletUpdatedAt: FieldValue.serverTimestamp()
             });
 
@@ -325,11 +325,11 @@ exports.processTitiPurchase = onDocumentCreated({
             });
         });
 
-        console.log(`[Titi Wallet] Success: Added ${amountToAdd} coins to ${userId}`);
+        console.log(`[Tini Wallet] Success: Added ${amountToAdd} coins to ${userId}`);
         return { success: true };
 
     } catch (error) {
-        console.error('[Titi Wallet] Error:', error);
+        console.error('[Tini Wallet] Error:', error);
         await purchaseRef.update({
             status: 'error',
             error: error.message,
@@ -355,20 +355,20 @@ exports.createWallet = onCall({
     try {
         const userDoc = await userRef.get();
 
-        if (userDoc.exists && userDoc.data().titiBalance!== undefined) {
+        if (userDoc.exists && userDoc.data().tiniBalance!== undefined) {
             return {
                 success: true,
                 message: 'المحفظة موجودة بالفعل',
-                balance: userDoc.data().titiBalance
+                balance: userDoc.data().tiniBalance
             };
         }
 
         await userRef.set({
-            titiBalance: 0,
+            tiniBalance: 0,
             walletCreatedAt: FieldValue.serverTimestamp()
         }, { merge: true });
 
-        console.log(`[Titi Wallet] Wallet created for: ${uid}`);
+        console.log(`[Tini Wallet] Wallet created for: ${uid}`);
         return {
             success: true,
             message: 'تم إنشاء المحفظة بنجاح',
@@ -376,7 +376,7 @@ exports.createWallet = onCall({
         };
 
     } catch (error) {
-        console.error('[Titi Wallet] Create Error:', error);
+        console.error('[Tini Wallet] Create Error:', error);
         throw new Error('حدث خطأ أثناء إنشاء المحفظة');
     }
 });
@@ -467,7 +467,7 @@ exports.sendActivityNotification = onDocumentCreated({
     const commentId = (activity.commentId || "").toString();
     const type = activity.type || "general";
 
-// [Titi Update] - لا ترسل إشعار خارجي للستوري و زيارة الملف الشخصي + منع تكرار اشعار قد تعرفه
+// [Tini Update] - لا ترسل إشعار خارجي للستوري و زيارة الملف الشخصي + منع تكرار اشعار قد تعرفه
 if (type === 'story_new' || type === 'view' || type === 'story_view' || type === 'following_post' || type === 'people_you_may_know_post' || type === 'message' || type === 'chat' || type === 'private_message') {
   console.log("Skipped external notification for type:", type);
   return null;
@@ -544,42 +544,42 @@ if (!toUid || toUid === fromUid) return null;
         const cleanTokens = fcmTokens.filter(t => t && t.length > 10);
         if (cleanTokens.length === 0) return null;
 
-                        // [Titi Update] - ربط زر تسجيلات الإعجاب بقسم التفاعلات
+                        // [Tini Update] - ربط زر تسجيلات الإعجاب بقسم التفاعلات
         if (type === 'like') {
             if (prefs?.likes === false || receiverData?.notificationSettings?.likes === false) {
                 console.log(`Skipped LIKE for ${toUid} - muted from interactions`);
                 return null;
             }
         }
-        // [Titi Update] - ربط زر مرات الإضافة إلى المحفوظات
+        // [Tini Update] - ربط زر مرات الإضافة إلى المحفوظات
         if (type === 'save' || type === 'bookmark' || type === 'favorite' || type === 'saves') {
             if (prefs?.saves === false || receiverData?.notificationSettings?.saves === false) {
                 console.log(`Skipped SAVE for ${toUid} - muted from interactions`);
                 return null;
             }
         }
-        // [Titi Update] - ربط زر التعليقات
+        // [Tini Update] - ربط زر التعليقات
         if (type === 'comment') {
             if (prefs?.comments === false || receiverData?.notificationSettings?.comments === false) {
                 console.log(`Skipped COMMENT for ${toUid} - muted from interactions`);
                 return null;
             }
         }
-        // [Titi Update] - ربط زر متابعون جدد
+        // [Tini Update] - ربط زر متابعون جدد
         if (type === 'follow' || type === 'new_follower' || type === 'new_followers') {
             if (prefs?.new_followers === false || receiverData?.notificationSettings?.new_followers === false) {
                 console.log(`Skipped FOLLOW for ${toUid} - muted from interactions`);
                 return null;
             }
         }
-        // [Titi Update] - ربط زر منشورات معاد نشرها
+        // [Tini Update] - ربط زر منشورات معاد نشرها
         if (type === 'repost' || type === 'reposts' || type === 'share') {
             if (prefs?.reposts === false || receiverData?.notificationSettings?.reposts === false) {
                 console.log(`Skipped REPOST for ${toUid} - muted from interactions`);
                 return null;
             }
         }
-        // [Titi Update] - ربط زر رسائل خاصة (المهم)
+        // [Tini Update] - ربط زر رسائل خاصة (المهم)
         if (type === 'message' || type === 'chat' || type === 'private_message') {
             if (prefs?.private === false || receiverData?.notificationSettings?.private === false) {
                 console.log(`Skipped MESSAGE for ${toUid} - muted private messages`);
@@ -1536,4 +1536,3 @@ exports.cleanupExpiredViewOnce = onSchedule({
     console.log(`[ViewOnce] Expired ${deleted} view-once media`);
     return null;
 });
-for (let k in exports) delete exports[k];

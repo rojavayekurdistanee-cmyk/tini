@@ -30,7 +30,7 @@ class UserModel {
   final DateTime? badgeEndsAt;
   
   // Wallet
-  final int titiBalance;
+  final int tiniBalance;
   
   // Admin
   final bool isAdmin;
@@ -67,7 +67,7 @@ class UserModel {
     this.createdAt,
     this.badge,
     this.badgeEndsAt,
-    this.titiBalance = 0,
+    this.tiniBalance = 0,
     this.isAdmin = false,
     this.crownNumber, // جديد
     this.allowMessageRequests = false, // جديد: افتراضي مقفول
@@ -96,7 +96,7 @@ class UserModel {
   // توليد رقم تاج ثابت من UID - نفس دالة CrownProvider
   String generateCrownNumber() {
     final hash = uid.hashCode.abs().toString().padLeft(5, '0');
-    return 'TITI-${hash.substring(0, 5)}';
+    return 'Tini-${hash.substring(0, 5)}';
   }
 
   factory UserModel.fromJson(Map<String, dynamic> json) {
@@ -125,7 +125,7 @@ class UserModel {
       createdAt: (json['createdAt'] as Timestamp?)?.toDate(),
       badge: json['badge'],
       badgeEndsAt: (json['badgeEndsAt'] as Timestamp?)?.toDate(),
-      titiBalance: json['titiBalance'] ?? 0,
+      tiniBalance: json['tiniBalance'] ?? 0,
       isAdmin: json['isAdmin'] ?? false,
       crownNumber: json['crownNumber'], // جديد
       allowMessageRequests: json['allowMessageRequests'] ?? false, // جديد
@@ -164,7 +164,7 @@ class UserModel {
       'badgeEndsAt': badgeEndsAt != null 
           ? Timestamp.fromDate(badgeEndsAt!) 
           : null,
-      'titiBalance': titiBalance,
+      'tiniBalance': tiniBalance,
       'isAdmin': isAdmin,
             'crownNumber': crownNumber ?? generateCrownNumber(),
       'allowMessageRequests': allowMessageRequests,
@@ -179,7 +179,7 @@ class UserModel {
     String? birthDate, int? followers, int? following, int? likes,
     bool? profileCompleted, bool? isAgeRestricted,
     DateTime? createdAt, String? badge, DateTime? badgeEndsAt,
-    int? titiBalance, bool? isAdmin, String? crownNumber, // جديد
+    int? tiniBalance, bool? isAdmin, String? crownNumber, // جديد
     bool? allowMessageRequests, bool? hideMessageRequestBanner, // جديد
     bool? isOnline, DateTime? lastSeen, bool? showActivityStatus, // جديد: اضافة فقط
   }) {
@@ -203,7 +203,7 @@ class UserModel {
       createdAt: createdAt ?? this.createdAt,
       badge: badge ?? this.badge,
       badgeEndsAt: badgeEndsAt ?? this.badgeEndsAt,
-      titiBalance: titiBalance ?? this.titiBalance,
+      tiniBalance: tiniBalance ?? this.tiniBalance,
       isAdmin: isAdmin ?? this.isAdmin,
       crownNumber: crownNumber ?? this.crownNumber, // جديد
       allowMessageRequests: allowMessageRequests ?? this.allowMessageRequests, // جديد

@@ -12,7 +12,7 @@ import 'dart:io'; // [Tini: IAP] - عشان Platform.isIOS
     2. Addition only.
     3. Consistent naming with Firestore keys.
     4. Rules Followed: Return full code, professional status management.
-    5. Wallet Module V2: Manages Titi Coins with Google Play + App Store IAP.
+    5. Wallet Module V2: Manages Tini Coins with Google Play + App Store IAP.
 */
 
 // [Tini: إضافة IAP] - لازم تعرف هذا في main.dart عشان نستخدم الكونتكست
@@ -48,8 +48,8 @@ class WalletProvider extends ChangeNotifier {
   bool _isLoading = false;
   bool get isLoading => _isLoading;
 
-  int _titiBalance = 0;
-  int get titiBalance => _titiBalance;
+  int _tiniBalance = 0;
+  int get tiniBalance => _tiniBalance;
 
   List<Transaction> _transactions = [];
   List<Transaction> get transactions => _transactions;
@@ -94,9 +94,9 @@ class WalletProvider extends ChangeNotifier {
        .listen((doc) {
       if (doc.exists) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        _titiBalance = data['titiBalance']?? 0;
+        _tiniBalance = data['tiniBalance']?? 0;
         notifyListeners();
-        print("--- [Tini Wallet]: الرصيد الآن متزامن: $_titiBalance ---");
+        print("--- [Tini Wallet]: الرصيد الآن متزامن: $_tiniBalance ---");
       } else {
         initWallet();
       }
@@ -193,7 +193,7 @@ class WalletProvider extends ChangeNotifier {
     try {
       _setLoading(true);
       
-      // [Tini: مهم] - هذي البيانات اللي بتروح للـ Function processTitiPurchase
+      // [Tini: مهم] - هذي البيانات اللي بتروح للـ Function processTiniPurchase
       await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -232,7 +232,7 @@ class WalletProvider extends ChangeNotifier {
       final result = await _functions.httpsCallable('createWallet')
           .call()
           .timeout(const Duration(seconds: 10));
-      _titiBalance = result.data['balance'] ?? 0;
+      _tiniBalance = result.data['balance'] ?? 0;
       notifyListeners();
       print("--- [Tini Wallet]: ${result.data['message']} ---");
     } on TimeoutException {
@@ -242,10 +242,10 @@ class WalletProvider extends ChangeNotifier {
       // Fallback: إنشاء مباشر لو فشل الـ Function
       try {
         await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-          'titiBalance': 0,
+          'tiniBalance': 0,
           'walletCreatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
-        _titiBalance = 0;
+        _tiniBalance = 0;
         notifyListeners();
         print("--- [Tini Wallet]: تم إنشاء المحفظة محلياً بنجاح ---");
       } catch (fallbackError) {
@@ -269,7 +269,7 @@ class WalletProvider extends ChangeNotifier {
          .get();
       if (doc.exists) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        _titiBalance = data['titiBalance']?? 0;
+        _tiniBalance = data['tiniBalance']?? 0;
         notifyListeners();
       } else {
         await initWallet();

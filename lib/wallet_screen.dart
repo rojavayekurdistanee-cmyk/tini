@@ -7,7 +7,7 @@ import 'wallet_provider.dart';
 /*
   [Tini Project - Wallet UI V2]
     1. Addition only.
-    2. Uses bgColor: 0xFF0F1720, surfaceColor: 0xFF1A222C, titiTeal: Colors.teal
+    2. Uses bgColor: 0xFF0F1720, surfaceColor: 0xFF1A222C, tiniTeal: Colors.teal
     3. Live balance sync with WalletProvider.
     4. Auto createWallet on first open.
     5. IAP Integration: Google Play + App Store.
@@ -23,7 +23,7 @@ class WalletScreen extends StatefulWidget {
 class _WalletScreenState extends State<WalletScreen> {
   final Color bgColor = const Color(0xFF0F1720);
   final Color surfaceColor = const Color(0xFF1A222C);
-  final Color titiTeal = Colors.teal;
+  final Color tiniTeal = Colors.teal;
 
   // [Tini: تعديل IAP] - لازم الـ id يكون نفس اللي في جوجل وآبل بالضبط
   final List<Map<String, dynamic>> _packages = [
@@ -69,7 +69,7 @@ class _WalletScreenState extends State<WalletScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
-          "محفظة Titi",
+          "محفظة Tini",
           style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
         ),
         // [Tini: إضافة IAP] - زر استعادة المشتريات مطلوب من آبل
@@ -84,7 +84,7 @@ class _WalletScreenState extends State<WalletScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: const Text("جاري البحث عن مشترياتك السابقة...", textAlign: TextAlign.center),
-                      backgroundColor: titiTeal,
+                      backgroundColor: tiniTeal,
                       behavior: SnackBarBehavior.floating,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
@@ -102,7 +102,7 @@ class _WalletScreenState extends State<WalletScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  CircularProgressIndicator(color: titiTeal),
+                  CircularProgressIndicator(color: tiniTeal),
                   const SizedBox(height: 15),
                   Text(
                     "جاري تجهيز المحفظة...",
@@ -118,7 +118,7 @@ class _WalletScreenState extends State<WalletScreen> {
             children: [
               _buildBalanceCard(wallet),
               const SizedBox(height: 25),
-              _buildSectionTitle("شراء عملات Titi"),
+              _buildSectionTitle("شراء عملات Tini"),
               const SizedBox(height: 15),
               // [Tini: تعديل IAP] - عرض حالة تحميل المنتجات
               wallet.iapAvailable && wallet.products.isEmpty
@@ -127,7 +127,7 @@ class _WalletScreenState extends State<WalletScreen> {
                       decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(15)),
                       child: Column(
                         children: [
-                          CircularProgressIndicator(color: titiTeal, strokeWidth: 2),
+                          CircularProgressIndicator(color: tiniTeal, strokeWidth: 2),
                           const SizedBox(height: 10),
                           const Text("جاري جلب أسعار المتجر...", style: TextStyle(color: Colors.white38, fontSize: 14)),
                         ],
@@ -154,7 +154,7 @@ class _WalletScreenState extends State<WalletScreen> {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: titiTeal.withValues(alpha:0.1),
+            color: tiniTeal.withValues(alpha:0.1),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -181,7 +181,7 @@ class _WalletScreenState extends State<WalletScreen> {
                   child: CircularProgressIndicator(color: Colors.teal, strokeWidth: 3),
                 )
               : Text(
-                  "${NumberFormat('#,###').format(wallet.titiBalance)}",
+                  "${NumberFormat('#,###').format(wallet.tiniBalance)}",
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 42,
@@ -190,8 +190,8 @@ class _WalletScreenState extends State<WalletScreen> {
                 ),
           const SizedBox(height: 5),
           Text(
-            "عملة Titi",
-            style: TextStyle(color: titiTeal, fontSize: 16, fontWeight: FontWeight.w500),
+            "عملة Tini",
+            style: TextStyle(color: tiniTeal, fontSize: 16, fontWeight: FontWeight.w500),
           ),
         ],
       ),
@@ -201,7 +201,7 @@ class _WalletScreenState extends State<WalletScreen> {
   Widget _buildSectionTitle(String title) {
     return Row(
       children: [
-        Container(width: 4, height: 20, decoration: BoxDecoration(color: titiTeal, borderRadius: BorderRadius.circular(10))),
+        Container(width: 4, height: 20, decoration: BoxDecoration(color: tiniTeal, borderRadius: BorderRadius.circular(10))),
         const SizedBox(width: 10),
         Text(title, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
       ],
@@ -234,7 +234,7 @@ class _WalletScreenState extends State<WalletScreen> {
             decoration: BoxDecoration(
               color: surfaceColor,
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: titiTeal.withValues(alpha:0.3), width: 1),
+              border: Border.all(color: tiniTeal.withValues(alpha:0.3), width: 1),
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -251,12 +251,12 @@ class _WalletScreenState extends State<WalletScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: titiTeal.withValues(alpha:0.2),
+                      color: tiniTeal.withValues(alpha:0.2),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       "+${package['bonus']} هدية",
-                      style: TextStyle(color: titiTeal, fontSize: 11, fontWeight: FontWeight.bold),
+                      style: TextStyle(color: tiniTeal, fontSize: 11, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
@@ -264,7 +264,7 @@ class _WalletScreenState extends State<WalletScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 6),
                   decoration: BoxDecoration(
-                    color: titiTeal,
+                    color: tiniTeal,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -310,12 +310,12 @@ class _WalletScreenState extends State<WalletScreen> {
             leading: Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: isPurchase? titiTeal.withValues(alpha:0.15) : Colors.redAccent.withValues(alpha:0.15),
+                color: isPurchase? tiniTeal.withValues(alpha:0.15) : Colors.redAccent.withValues(alpha:0.15),
                 shape: BoxShape.circle,
               ),
               child: Icon(
                 isPurchase? Iconsax.arrow_down_2 : Iconsax.arrow_up_1,
-                color: isPurchase? titiTeal : Colors.redAccent,
+                color: isPurchase? tiniTeal : Colors.redAccent,
                 size: 20,
               ),
             ),
@@ -327,7 +327,7 @@ class _WalletScreenState extends State<WalletScreen> {
             trailing: Text(
               "${isPurchase? '+' : '-'}${NumberFormat('#,###').format(tx.amount)}",
               style: TextStyle(
-                color: isPurchase? titiTeal : Colors.redAccent,
+                color: isPurchase? tiniTeal : Colors.redAccent,
                 fontSize: 15,
                 fontWeight: FontWeight.bold,
               ),
@@ -388,7 +388,7 @@ class _WalletScreenState extends State<WalletScreen> {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: titiTeal,
+              backgroundColor: tiniTeal,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: () => Navigator.pop(context, true),
