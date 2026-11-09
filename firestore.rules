@@ -114,7 +114,7 @@ match /sharedPosts/{postId} {
         allow read, write: if request.auth!= null && request.auth.uid == userId;
       }
 
-      // [Titi Star: تنبيهات الأمان] - للسماح بقراءة التنبيهات
+      // [Titi Star: تنبيهات الأمان]
       match /securityAlerts/{alertId} {
         allow read, write: if request.auth!= null && request.auth.uid == userId;
       }
@@ -131,7 +131,7 @@ match /sharedPosts/{postId} {
             // [Titi Star Wallet]: السماح بالوصول لمجموعة العمليات داخل ملف المستخدم
       match /transactions/{transactionId} {
         allow read: if request.auth!= null && request.auth.uid == userId;
-        allow write: if false; // بس السيرفر يكتب العمليات
+        allow write: if false; // بس السيرفر يكتب
       }
 
       // [Titi Star Wallet]: السماح بالوصول لطلبات الشراء المعلقة
@@ -194,17 +194,135 @@ match /sharedPosts/{postId} {
       }
     }
 
+    // [Tini - Message Requests]: وظائف حماية طلبات المراسلة.
+    function tiniChatPeer(participants, uid) {
+      return participants[0] == uid ? participants[1] : participants[0];
+    }
+
+    function tiniMutual(a, b) {
+      return exists(/databases/$(database)/documents/users/$(a)/following/$(b))
+        && exists(/databases/$(database)/documents/users/$(b)/following/$(a));
+    }
+
+    function tiniFirstMessageAllowed(sender, receiver) {
+      let targetPath = /databases/$(database)/documents/users/$(receiver);
+
+      return exists(targetPath)
+        && get(targetPath).data.get('allowMessageRequests', false) == true
+        && (
+          get(targetPath).data.get('messageRequestPrivacy', 'followers') == 'all'
+          || (
+            get(targetPath).data.get('messageRequestPrivacy', 'followers') == 'followers'
+            && exists(/databases/$(database)/documents/users/$(receiver)/followers/$(sender))
+          )
+        );
+    }
+
+    function tiniRoomUpdateSafe() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let me = request.auth.uid;
+      let peer = tiniChatPeer(before.participants, me);
+      let oldRequest = before.get('isRequest', false);
+      let newRequest = after.get('isRequest', false);
+      let oldCan = before.get('canSendMore', {});
+      let newCan = after.get('canSendMore', {});
+      let oldLast = before.get('lastMessageSenderId', '');
+      let newLast = after.get('lastMessageSenderId', '');
+
+      return newCan is map
+        && newCan.keys().hasOnly(before.participants)
+        && (
+          // تحديث بيانات الغرفة دون تغيير حالة الطلب.
+          (
+            newRequest == oldRequest
+            && newCan == oldCan
+            && (
+              newLast == oldLast
+              || (
+                newLast == me
+                && (oldLast != '' || tiniFirstMessageAllowed(me, peer))
+                && (oldRequest == false || tiniMutual(me, peer))
+              )
+            )
+          )
+
+          // أول رسالة من صاحب الطلب: إيقاف الإرسال الإضافي.
+          || (
+            oldRequest == true
+            && newRequest == true
+            && oldLast == ''
+            && newLast == me
+            && oldCan.get(me, false) == true
+            && newCan.get(me, true) == false
+            && newCan.get(peer, false) == true
+            && newCan.diff(oldCan).affectedKeys().hasOnly([me])
+            && tiniFirstMessageAllowed(me, peer)
+          )
+
+          // رد المستلم: تحويل الطلب إلى محادثة عادية.
+          || (
+            oldRequest == true
+            && newRequest == false
+            && oldLast != ''
+            && oldLast != me
+            && newLast == me
+            && oldCan.get(me, false) == true
+            && newCan.get(me, false) == true
+            && newCan.get(peer, false) == true
+            && newCan.diff(oldCan).affectedKeys().hasOnly([me, peer])
+          )
+        );
+    }
+
         match /chat_rooms/{chatRoomId} {
   allow read: if request.auth!= null;
 
-  allow create: if request.auth!= null
-                && request.auth.uid in request.resource.data.participants;
+  // [Tini]: التحقق من صلاحيات إنشاء طلب المراسلة.
+  allow create: if request.auth != null
+                && request.resource.data.participants is list
+                && request.resource.data.participants.size() == 2
+                && request.resource.data.participants[0] != request.resource.data.participants[1]
+                && request.auth.uid in request.resource.data.participants
+                && request.resource.data.get('isRequest', null) is bool
+                && (
+                  request.resource.data.isRequest == true
+                  || tiniMutual(
+                    request.resource.data.participants[0],
+                    request.resource.data.participants[1]
+                  )
+                )
+                && request.resource.data.get('lastMessageSenderId', null) == ''
+                && request.resource.data.get('canSendMore', {}) is map
+                && request.resource.data.canSendMore.get(
+                  request.resource.data.participants[0], false
+                ) == true
+                && request.resource.data.canSendMore.get(
+                  request.resource.data.participants[1], false
+                ) == true
+                && request.resource.data.canSendMore.keys()
+                    .hasOnly(request.resource.data.participants)
+                && tiniFirstMessageAllowed(
+                  request.auth.uid,
+                  tiniChatPeer(
+                    request.resource.data.participants,
+                    request.auth.uid
+                  )
+                );
 
-  allow update: if request.auth!= null
+  // [Tini]: حماية انتقالات isRequest و canSendMore.
+  allow update: if request.auth != null
                 && request.auth.uid in resource.data.participants
-                && request.resource.data.participants == resource.data.participants;
-  allow delete: if request.auth!= null
-                && request.auth.uid in resource.data.participants;
+                && request.resource.data.participants == resource.data.participants
+                && tiniRoomUpdateSafe();
+
+  // [Tini]: منع إعادة إنشاء طلب بعد إرسال أول رسالة.
+  allow delete: if request.auth != null
+                && request.auth.uid in resource.data.participants
+                && (
+                  resource.data.get('isRequest', false) != true
+                  || resource.data.get('lastMessageSenderId', '') != request.auth.uid
+                );
 
   match /messages/{messageId} {
     allow read: if request.auth!= null;
@@ -219,9 +337,28 @@ match /sharedPosts/{postId} {
                   &&!exists(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0])/blocked/$(request.auth.uid))
                   &&!exists(/databases/$(database)/documents/users/$(request.auth.uid)/blockedBy/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0]))
                   &&!exists(/databases/$(database)/documents/users/$(get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0] == request.auth.uid? get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[1] : get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants[0])/blockedBy/$(request.auth.uid))
+
+                  // [Tini]: التحقق من الموافقة عند أول رسالة.
                   && (
-                    // 1. لو صديق: مسموح دايماً
-                    get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participantsInfo[request.auth.uid].isFriend == true
+                    get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.get('lastMessageSenderId', '') != ''
+                    || tiniFirstMessageAllowed(
+                      request.auth.uid,
+                      tiniChatPeer(
+                        get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants,
+                        request.auth.uid
+                      )
+                    )
+                  )
+
+                  && (
+                    // 1. لو صديق: يجب التحقق من المتابعة المتبادلة الحقيقية.
+                    tiniMutual(
+                      request.auth.uid,
+                      tiniChatPeer(
+                        get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.participants,
+                        request.auth.uid
+                      )
+                    )
                     ||
                     // 2. لو مش صديق: لازم canSendMore = true
                     get(/databases/$(database)/documents/chat_rooms/$(chatRoomId)).data.canSendMore[request.auth.uid] == true
@@ -290,13 +427,13 @@ match /sharedPosts/{postId} {
                   && (request.resource.data.moderators == resource.data.moderators || request.auth.uid == resource.data.createdBy || request.auth.uid in resource.data.admins)
                 )
                 ||
-                // تقييد مؤقت - بس المالك والمسؤول والمشرف يقدرو يعدلو حقل restricted لحالو
+                // تقييد مؤقت - بس المالك والمسؤول والمشرف يقدروا يعدلوا حقل restricted لحاله
                 (
                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['restricted'])
                   && (request.auth.uid == resource.data.createdBy || request.auth.uid in resource.data.admins || request.auth.uid in resource.data.moderators)
                 )
                 ||
-                // فك تقييد تلقائي عند انتهاء المدة - اي عضو مقيد بيقدر يمسح حالو
+                // فك تقييد تلقائي عند انتهاء المدة
                 (
                   request.resource.data.diff(resource.data).affectedKeys().hasOnly(['restricted'])
                   && request.resource.data.restricted[request.auth.uid] == null
@@ -313,7 +450,6 @@ match /sharedPosts/{postId} {
     match /users/{userId}/group_invites/{groupId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-
 
     // الفيديوهات أو المنشورات (تحديث نهائي لدعم المحذوفات + الأمان)
     match /posts/{postId} {
@@ -333,7 +469,7 @@ match /sharedPosts/{postId} {
       allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
 
       // [Tini - Owner Reactions Overlay] - فهرس الإعجابات لكل فيديو.
-      // صاحب الفيديو يرى الأسماء للعرض فوق الفيديو، وصاحب الإعجاب يرى تسجيله فقط.
+      // صاحب الفيديو يرى الأسماء والأعداد فوق الفيديو، وصاحب الإعجاب يرى تسجيله فقط.
       match /likes/{userId} {
         allow read: if request.auth != null && (
           request.auth.uid == userId

@@ -1536,3 +1536,4 @@ exports.cleanupExpiredViewOnce = onSchedule({
     console.log(`[ViewOnce] Expired ${deleted} view-once media`);
     return null;
 });
+for (let k in exports) delete exports[k];
