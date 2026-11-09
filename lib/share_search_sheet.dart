@@ -6,78 +6,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
 import 'auth_provider.dart' as custom;
 import 'chat_provider.dart';
+import 'tini_messaging_notice.dart';
 import 'user_model.dart';
-
-void _showTiniShareOutcome(
-  ScaffoldMessengerState? messenger,
-  List<ChatFailureReason?> results, {
-  String itemLabel = 'المشاركة',
-}) {
-  if (messenger == null || !messenger.mounted || results.isEmpty) return;
-
-  final failureCounts = <ChatFailureReason, int>{};
-  for (final reason in results) {
-    if (reason != null) {
-      failureCounts.update(reason, (count) => count + 1, ifAbsent: () => 1);
-    }
-  }
-  final successful = results.length - failureCounts.values.fold<int>(0, (sum, count) => sum + count);
-  final failed = results.length - successful;
-  final title = failed == 0
-      ? 'تمت المشاركة مع $successful'
-      : successful > 0
-          ? 'تمت المشاركة مع $successful من أصل ${results.length}، وفشل $failed'
-          : 'تعذّر إرسال $itemLabel إلى $failed';
-
-  final details = failureCounts.entries.toList();
-  final reasonText = details.isEmpty
-      ? ''
-      : details.length == 1
-          ? details.first.key.userMessage
-          : [
-              ...details.take(2).map((entry) => '${entry.value}: ${entry.key.userMessage}'),
-              if (details.length > 2) 'وأسباب أخرى لدى ${details.skip(2).fold<int>(0, (sum, entry) => sum + entry.value)} حسابات.',
-            ].join('\n');
-  final hasTechnicalError = failureCounts.keys.any((reason) => !reason.isPrivacyRestriction);
-  final iconColor = failed == 0
-      ? Colors.teal
-      : hasTechnicalError
-          ? const Color(0xFFE53935)
-          : Colors.white54;
-
-  messenger.hideCurrentSnackBar();
-  messenger.showSnackBar(SnackBar(
-    behavior: SnackBarBehavior.floating,
-    backgroundColor: const Color(0xFF1A222C),
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-    duration: Duration(seconds: failed == 0 ? 3 : 5),
-    content: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(
-          failed == 0 ? Icons.check_circle_outline : hasTechnicalError ? Icons.error_outline : Icons.info_outline,
-          color: iconColor,
-          size: 22,
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-              if (reasonText.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(reasonText, style: const TextStyle(color: Colors.white70, fontSize: 12),
-                    maxLines: 5, overflow: TextOverflow.ellipsis),
-              ],
-            ],
-          ),
-        ),
-      ],
-    ),
-  ));
-}
 
 ChatFailureReason _shareErrorReason(Object error) {
   return error is FirebaseException && error.code == 'permission-denied'
@@ -149,7 +79,7 @@ class _ShareSearchSheetState extends State<ShareSearchSheet> {
     final messenger = ScaffoldMessenger.maybeOf(context);
 
     if (myUid.isEmpty || targetProfileId.isEmpty) {
-      _showTiniShareOutcome(messenger,
+      TiniMessagingNotice.showShareOutcome(messenger,
           List<ChatFailureReason?>.filled(selected.length, ChatFailureReason.notAuthenticated));
       _sharingInProgress = false;
       return;
@@ -167,7 +97,7 @@ class _ShareSearchSheetState extends State<ShareSearchSheet> {
       targetUsername = (targetData['username'] ?? authProvider.username).toString();
     } catch (error) {
       debugPrint('Error reading shared profile: $error');
-      _showTiniShareOutcome(messenger,
+      TiniMessagingNotice.showShareOutcome(messenger,
           List<ChatFailureReason?>.filled(selected.length, _shareErrorReason(error)));
       _sharingInProgress = false;
       return;
@@ -227,7 +157,7 @@ class _ShareSearchSheetState extends State<ShareSearchSheet> {
       }
     }));
 
-    _showTiniShareOutcome(messenger, results);
+    TiniMessagingNotice.showShareOutcome(messenger, results);
   }
 
   @override

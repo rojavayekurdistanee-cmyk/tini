@@ -9,6 +9,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'story_provider.dart';
 import 'chat_provider.dart'; // ✅ مهم
+import 'tini_messaging_notice.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'share_story_sheet.dart';
 import 'story_reply_bar.dart';
@@ -440,46 +441,16 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
   // إشعار نتيجة الرد لا يتحول إلى نجاح إلا بعد تأكيد حفظ الرسالة.
   void _showStorySendFailure(ChatFailureReason? reason) {
     if (!mounted) return;
-    final privacy = reason?.isPrivacyRestriction ?? false;
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    if (messenger == null) return;
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(SnackBar(
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: kSurface,
-      duration: const Duration(seconds: 4),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      content: Row(children: [
-        Icon(privacy ? Icons.shield_outlined : Icons.error_outline,
-          color: privacy ? Colors.white54 : kErrorRed),
-        const SizedBox(width: 12),
-        Expanded(child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(privacy ? 'خصوصية المراسلة' : 'تعذّر إرسال الرد',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 3),
-            Text(reason?.userMessage ?? 'تعذّر إتمام العملية. تحقق من اتصالك وحاول مرة أخرى.',
-              style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          ],
-        )),
-      ]),
-    ));
+    TiniMessagingNotice.showFailure(
+      ScaffoldMessenger.maybeOf(context), reason,
+      action: 'إرسال الرد',
+    );
   }
 
   void _showStorySendSuccess() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: kSurface,
-      duration: Duration(seconds: 2),
-      content: Row(children: [
-        Icon(Icons.check_circle_outline, color: Colors.teal),
-        SizedBox(width: 10),
-        Text('تم إرسال الرد', style: TextStyle(color: Colors.white)),
-      ]),
-    ));
+    TiniMessagingNotice.showSuccess(
+      ScaffoldMessenger.maybeOf(context), 'تم إرسال الرد');
   }
 
   // ✅ إرسال رد - مع بريفيو الستوري

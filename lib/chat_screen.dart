@@ -20,6 +20,7 @@ import 'package:provider/provider.dart';
 import 'user_profile_sheet.dart';
 import 'media_picker_screen.dart';
 import 'chat_provider.dart';
+import 'tini_messaging_notice.dart';
 import 'private_chat_media_screen.dart';
 import 'chat_album_widgets.dart';
 import 'story_ring.dart';
@@ -37,57 +38,16 @@ import 'view_once_icon.dart'; // [عرض مرة واحدة - الخاص]
 
 // [Tini - Messaging]: إشعار موحد يميّز قيود الخصوصية عن الأخطاء التقنية.
 // تُستخدم الدالة أيضاً في زر المراسلة وفي شريط القصص دون تعديل ChatProvider.
-SnackBar _tiniChatAccessSnackBar(ChatFailureReason? reason) {
-  final privacy = reason?.isPrivacyRestriction ?? false;
-  return SnackBar(
-    behavior: SnackBarBehavior.floating,
-    backgroundColor: const Color(0xFF1A222C),
-    elevation: 5,
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-    margin: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-    duration: const Duration(seconds: 4),
-    content: Row(
-      children: [
-        Icon(
-          privacy ? Icons.shield_outlined : Icons.error_outline,
-          color: privacy ? Colors.white54 : const Color(0xFFE53935),
-          size: 23,
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                privacy ? 'خصوصية المراسلة' : 'تعذّر فتح المحادثة',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 3),
-              Text(
-                reason?.userMessage ?? 'تعذّر التحقق من إمكانية المراسلة. حاول مرة أخرى.',
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
-              ),
-            ],
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
+// [Tini - Messaging] موحّد مع إشعارات الردود والمشاركات، دون تغيير صلاحيات المراسلة.
 void _showTiniChatAccessNoticeOnMessenger(
   ScaffoldMessengerState messenger,
   ChatFailureReason? reason,
 ) {
-  if (!messenger.mounted) return;
-  messenger.hideCurrentSnackBar();
-  messenger.showSnackBar(_tiniChatAccessSnackBar(reason));
+  TiniMessagingNotice.showAccess(messenger, reason);
 }
 
 void showTiniChatAccessNotice(BuildContext context, ChatFailureReason? reason) {
-  final messenger = ScaffoldMessenger.maybeOf(context);
-  if (messenger != null) _showTiniChatAccessNoticeOnMessenger(messenger, reason);
+  TiniMessagingNotice.showAccess(ScaffoldMessenger.maybeOf(context), reason);
 }
 
 class ChatScreen extends StatefulWidget {
@@ -181,48 +141,25 @@ class _ChatScreenState extends State<ChatScreen> {
   void _notifyMediaUploadError(Object error) {
     if (!mounted) return;
     final message = error.toString();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(message.contains('250 MB') || message.contains('25 MB')
-          ? message.replaceFirst('Bad state: ', '')
-          : 'تعذر إرسال الوسائط. حاول مجددًا.'),
-      backgroundColor: const Color(0xFFE53935),
-    ));
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (message.contains('250 MB') || message.contains('25 MB')) {
+      TiniMessagingNotice.showInfo(messenger,
+          message.replaceFirst('Bad state: ', ''),
+          title: 'حجم الوسائط غير صالح');
+    } else {
+      TiniMessagingNotice.showTechnicalError(messenger, 'تعذّر إرسال الوسائط');
+    }
   }
 
   // [Tini - send result] لا نخلط رفض الخصوصية مع فشل التحميل/الحفظ.
+  // [Tini - send result] رفض الخصوصية لا يظهر كفشل تقني أحمر.
   void _showPrivateSendFailure(ChatFailureReason? reason,
       {String action = 'إرسال الرسالة', VoidCallback? onRetry}) {
     if (!mounted) return;
-    final privacy = reason?.isPrivacyRestriction ?? false;
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    if (messenger == null) return;
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(SnackBar(
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: const Color(0xFF1A222C),
-      duration: const Duration(seconds: 4),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      content: Row(children: [
-        Icon(privacy ? Icons.shield_outlined : Icons.error_outline,
-            color: privacy ? Colors.white54 : const Color(0xFFE53935)),
-        const SizedBox(width: 12),
-        Expanded(child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(privacy ? 'خصوصية المراسلة' : 'تعذّر $action',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 3),
-            Text(reason?.userMessage ?? 'تعذّر إتمام العملية. تحقق من اتصالك وحاول مرة أخرى.',
-              style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          ],
-        )),
-      ]),
-      action: !privacy && onRetry != null
-          ? SnackBarAction(label: 'إعادة المحاولة', textColor: Colors.teal,
-              onPressed: onRetry)
-          : null,
-    ));
+    TiniMessagingNotice.showFailure(
+      ScaffoldMessenger.maybeOf(context), reason,
+      action: action, onRetry: onRetry,
+    );
   }
 
   // يفرّغ شريط الإدخال نصه فور الضغط على إرسال؛ نعيده إذا رفض Firestore الحفظ.
@@ -619,11 +556,15 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) {
         setState(() => pending.failed = true);
         final message = e.toString();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-          message.contains('50 ميغابايت')
-              ? 'حجم المستند يتجاوز الحد المسموح (50 MB). اختر ملفاً أصغر.'
-              : 'تعذر إرسال المستند. يمكنك إعادة المحاولة.',
-        )));
+        if (message.contains('50 ميغابايت')) {
+          TiniMessagingNotice.showInfo(ScaffoldMessenger.maybeOf(context),
+              'حجم المستند يتجاوز الحد المسموح (50 MB). اختر ملفاً أصغر.',
+              title: 'حجم المستند غير صالح');
+        } else {
+          TiniMessagingNotice.showTechnicalError(
+              ScaffoldMessenger.maybeOf(context), 'تعذّر إرسال المستند',
+              description: 'تعذّر إرسال المستند. يمكنك إعادة المحاولة.');
+        }
       }
     } finally {
       _uploadingPrivateDocuments.remove(pending.id);
@@ -725,9 +666,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // ===== [عرض مرة واحدة - الدردشات الخاصة] =====
   void _viewOnceSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    TiniMessagingNotice.showInfo(ScaffoldMessenger.maybeOf(context), message);
   }
 
   Future<void> _openPrivateViewOnce(String messageId, Map<String, dynamic> message, bool isMe) async {
@@ -1047,8 +986,9 @@ class _ChatScreenState extends State<ChatScreen> {
                               );
                               if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
                               if (result.isSuccess) {
-                                ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
-                                  content: Text('تمت إعادة التوجيه'), backgroundColor: Color(0xFF1A222C)));
+                                TiniMessagingNotice.showSuccess(
+                                    ScaffoldMessenger.maybeOf(this.context),
+                                    'تمت إعادة التوجيه');
                               } else {
                                 _showPrivateSendFailure(result.failureReason, action: 'إعادة التوجيه');
                               }
@@ -2383,7 +2323,10 @@ appBar: AppBar(
                                   final doc = await TiniChatAttachments.pickDocument();
                                   if (doc == null || !mounted) return;
                                   if (doc.path == null) {
-                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تعذر الوصول إلى المستند المختار. اختر ملفاً آخر.')));
+                                    TiniMessagingNotice.showInfo(
+                                        ScaffoldMessenger.maybeOf(context),
+                                        'تعذّر الوصول إلى المستند المختار. اختر ملفاً آخر.',
+                                        title: 'المستند غير متاح');
                                     return;
                                   }
                                   final pending = _PendingUpload(
@@ -2396,11 +2339,16 @@ appBar: AppBar(
                                 } catch (e) {
                                   if (mounted) {
                                     final message = e.toString();
-                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
-                                      message.contains('50 ميغابايت')
-                                          ? 'حجم المستند يتجاوز الحد المسموح (50 MB). اختر ملفاً أصغر.'
-                                          : 'تعذر اختيار المستند: $e',
-                                    )));
+                                    if (message.contains('50 ميغابايت')) {
+                                      TiniMessagingNotice.showInfo(
+                                          ScaffoldMessenger.maybeOf(context),
+                                          'حجم المستند يتجاوز الحد المسموح (50 MB). اختر ملفاً أصغر.',
+                                          title: 'حجم المستند غير صالح');
+                                    } else {
+                                      TiniMessagingNotice.showTechnicalError(
+                                          ScaffoldMessenger.maybeOf(context),
+                                          'تعذّر اختيار المستند');
+                                    }
                                   }
                                 } finally {
                                   _pickingPrivateDocument = false;
