@@ -45,6 +45,80 @@ class ChatMessage {
   });
 }
 
+// [Tini - Messaging]: نتيجة تفصيلية لكل محاولة، بدون تخزين حالة مشتركة بين العمليات.
+// واجهات startChat وsendMessage القديمة تظل متوافقة مع جميع الاستدعاءات الحالية.
+enum ChatFailureReason {
+  requestsDisabled,
+  followersOnly,
+  nobody,
+  blocked,
+  waitingForReply,
+  accountUnavailable,
+  privacyUnavailable,
+  permissionDenied,
+  roomNotFound,
+  notAuthenticated,
+  invalidMedia,
+  technicalError,
+}
+
+extension ChatFailureReasonDetails on ChatFailureReason {
+  String get userMessage {
+    switch (this) {
+      case ChatFailureReason.requestsDisabled:
+        return 'هذا الحساب لم يفعّل استقبال طلبات المراسلة.';
+      case ChatFailureReason.followersOnly:
+        return 'هذا الحساب يستقبل طلبات المراسلة من متابعيه فقط.';
+      case ChatFailureReason.nobody:
+        return 'هذا الحساب لا يستقبل طلبات مراسلة جديدة.';
+      case ChatFailureReason.blocked:
+        return 'لا يمكنك مراسلة هذا الحساب حالياً.';
+      case ChatFailureReason.waitingForReply:
+        return 'طلب المراسلة قيد الانتظار. يمكنك إرسال المزيد بعد رد الطرف الآخر.';
+      case ChatFailureReason.accountUnavailable:
+        return 'تعذّر الوصول إلى هذا الحساب للمراسلة.';
+      case ChatFailureReason.privacyUnavailable:
+        return 'تعذّر التحقق من إمكانية المراسلة. حاول مرة أخرى.';
+      case ChatFailureReason.permissionDenied:
+        return 'تعذّر إتمام المراسلة بسبب قيود الوصول. حاول مرة أخرى.';
+      case ChatFailureReason.roomNotFound:
+        return 'المحادثة غير متاحة. حاول فتحها من جديد.';
+      case ChatFailureReason.notAuthenticated:
+        return 'يرجى تسجيل الدخول للمراسلة.';
+      case ChatFailureReason.invalidMedia:
+        return 'تعذّر إرسال الوسائط. تحقق من الملف وحاول مرة أخرى.';
+      case ChatFailureReason.technicalError:
+        return 'تعذّر إتمام العملية. تحقق من اتصالك وحاول مرة أخرى.';
+    }
+  }
+
+  bool get isPrivacyRestriction {
+    switch (this) {
+      case ChatFailureReason.requestsDisabled:
+      case ChatFailureReason.followersOnly:
+      case ChatFailureReason.nobody:
+      case ChatFailureReason.blocked:
+      case ChatFailureReason.waitingForReply:
+        return true;
+      default:
+        return false;
+    }
+  }
+}
+
+class ChatActionResult<T> {
+  final T? value;
+  final ChatFailureReason? failureReason;
+
+  const ChatActionResult.success(T result) : value = result, failureReason = null;
+  const ChatActionResult.failure(ChatFailureReason reason)
+      : value = null, failureReason = reason;
+
+  bool get isSuccess => failureReason == null;
+  String? get failureMessage => failureReason?.userMessage;
+  bool get isPrivacyRestriction => failureReason?.isPrivacyRestriction ?? false;
+}
+
 class ChatProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -585,7 +659,8 @@ class ChatProvider extends ChangeNotifier {
 
   // [Tini]: التحقق من موافقة المستلم وخصوصية طلب المراسلة الأولى.
   // هذا الفحص لا يغيّر حالة الطلب ولا يمنع الرد ضمن محادثة بدأت بالفعل.
-  Future<bool> _canReceiveFirstMessage({
+  // null = مسموح؛ غير null = سبب الرفض المحدد لهذه العملية فقط.
+  Future<ChatFailureReason?> _firstMessageFailureReason({
     required String senderUid,
     required String receiverUid,
   }) async {
@@ -594,16 +669,20 @@ class ChatProvider extends ChangeNotifier {
       final receiverDoc = await _firestore.collection('users').doc(receiverUid)
           .get(const GetOptions(source: Source.server));
       final receiverData = receiverDoc.data();
-      if (receiverData == null || receiverData['allowMessageRequests'] != true) {
+      if (receiverData == null) {
+        debugPrint('--- [MSG PRIVACY]: receiver account not found ---');
+        return ChatFailureReason.accountUnavailable;
+      }
+      if (receiverData['allowMessageRequests'] != true) {
         debugPrint('--- [MSG PRIVACY]: message requests not allowed ---');
-        return false;
+        return ChatFailureReason.requestsDisabled;
       }
 
       final String privacy = receiverData['messageRequestPrivacy'] ?? 'followers';
-      if (privacy == 'all') return true;
+      if (privacy == 'all') return null;
       if (privacy == 'nobody') {
         debugPrint('--- [MSG PRIVACY]: nobody - blocked ---');
-        return false;
+        return ChatFailureReason.nobody;
       }
       if (privacy == 'followers') {
         // "متابعوك" تعني أن المرسل يتابع المستلم، وليس العكس.
@@ -612,18 +691,18 @@ class ChatProvider extends ChangeNotifier {
             .get(const GetOptions(source: Source.server));
         if (!followerDoc.exists) {
           debugPrint('--- [MSG PRIVACY]: sender is not a follower ---');
-          return false;
+          return ChatFailureReason.followersOnly;
         }
-        return true;
+        return null;
       }
 
       // لا نسمح بطلب جديد عند وجود قيمة خصوصية غير معروفة.
       debugPrint('--- [MSG PRIVACY]: unknown privacy setting: $privacy ---');
-      return false;
+      return ChatFailureReason.privacyUnavailable;
     } catch (e) {
       // تعذّر التحقق لا يُعتبر موافقة، ولا يغيّر المحادثات الحالية.
       debugPrint('--- [MSG PRIVACY]: failed to verify first-message permission: $e ---');
-      return false;
+      return ChatFailureReason.privacyUnavailable;
     }
   }
 
@@ -635,13 +714,33 @@ class ChatProvider extends ChangeNotifier {
     String? currentUserName,
     String? currentUserImg,
   }) async {
+    final result = await startChatWithReason(
+      viewedUid: viewedUid,
+      displayFullName: displayFullName,
+      displayProfileImg: displayProfileImg,
+      isFriend: isFriend,
+      currentUserName: currentUserName,
+      currentUserImg: currentUserImg,
+    );
+    return result.value ?? '';
+  }
+
+  // النسخة التفصيلية للمسارات التي تحتاج عرض سبب منع فتح المحادثة.
+  Future<ChatActionResult<String>> startChatWithReason({
+    required String viewedUid,
+    required String displayFullName,
+    required String displayProfileImg,
+    required bool isFriend,
+    String? currentUserName,
+    String? currentUserImg,
+  }) async {
     try {
       final String currentUid = FirebaseAuth.instance.currentUser?.uid?? '';
-      if (currentUid.isEmpty) return '';
+      if (currentUid.isEmpty) return const ChatActionResult<String>.failure(ChatFailureReason.notAuthenticated);
       // [إضافة فقط - HARD BLOCK] - ممنوع تبدأ شات مع محظور
       if (_blockedIds.contains(viewedUid)) {
         debugPrint('--- [HARD BLOCK]: blocked user cannot start chat ---');
-        return '';
+        return const ChatActionResult<String>.failure(ChatFailureReason.blocked);
       }
 
       final List<String> sortedIds = [currentUid, viewedUid]..sort();
@@ -652,9 +751,10 @@ class ChatProvider extends ChangeNotifier {
       // التحقق مطلوب عند بدء أول رسالة فقط، وليس عند فتح محادثة جارية.
       final bool hasFirstMessage = doc.exists &&
           (doc.data()?['lastMessageSenderId'] ?? '').toString().isNotEmpty;
-      if (!hasFirstMessage &&
-          !await _canReceiveFirstMessage(senderUid: currentUid, receiverUid: viewedUid)) {
-        return '';
+      if (!hasFirstMessage) {
+        final failureReason = await _firstMessageFailureReason(
+          senderUid: currentUid, receiverUid: viewedUid);
+        if (failureReason != null) return ChatActionResult<String>.failure(failureReason);
       }
 
       final oldRoom = doc.data();
@@ -724,10 +824,14 @@ class ChatProvider extends ChangeNotifier {
         await roomRef.set(data, SetOptions(merge: true));
         notifyListeners();
       }
-      return roomId;
+      return ChatActionResult<String>.success(roomId);
+    } on FirebaseException catch (e) {
+      debugPrint('Error starting chat: $e');
+      return ChatActionResult<String>.failure(e.code == 'permission-denied'
+          ? ChatFailureReason.permissionDenied : ChatFailureReason.technicalError);
     } catch (e) {
       debugPrint('Error starting chat: $e');
-      return '';
+      return const ChatActionResult<String>.failure(ChatFailureReason.technicalError);
     }
   }
 
@@ -744,16 +848,46 @@ class ChatProvider extends ChangeNotifier {
     Map<String, dynamic>? extraData,
     bool viewOnce = false, // [عرض مرة واحدة - الدردشات الخاصة]
   }) async {
+    final result = await sendMessageWithReason(
+      roomId: roomId,
+      senderId: senderId,
+      receiverId: receiverId,
+      type: type,
+      text: text,
+      mediaUrl: mediaUrl,
+      isFriend: isFriend,
+      replyTo: replyTo,
+      durationSeconds: durationSeconds,
+      extraData: extraData,
+      viewOnce: viewOnce,
+    );
+    return result.isSuccess;
+  }
+
+  // النسخة التفصيلية للمسارات التي تحتاج عرض سبب فشل إرسال الرسالة.
+  Future<ChatActionResult<bool>> sendMessageWithReason({
+    required String roomId,
+    required String senderId,
+    required String receiverId,
+    required String type,
+    String? text,
+    String? mediaUrl,
+    required bool isFriend,
+    Map<String, dynamic>? replyTo,
+    int? durationSeconds,
+    Map<String, dynamic>? extraData,
+    bool viewOnce = false, // [عرض مرة واحدة - الدردشات الخاصة]
+  }) async {
     try {
       final roomRef = _firestore.collection('chat_rooms').doc(roomId);
       final roomSnap = await roomRef.get();
-      if (!roomSnap.exists) return false;
+      if (!roomSnap.exists) return const ChatActionResult<bool>.failure(ChatFailureReason.roomNotFound);
 
       final roomData = roomSnap.data()?? {};
       // [إضافة فقط - HARD BLOCK] - ممنوع ترسل لمحظور
       if (_blockedIds.contains(receiverId)) {
         debugPrint('--- [HARD BLOCK]: cannot send to blocked ---');
-        return false;
+        return const ChatActionResult<bool>.failure(ChatFailureReason.blocked);
       }
 
       // [Tini]: قراءة حالة الغرفة للفحص المسبق - الحماية الحقيقية بالقواعد
@@ -767,20 +901,25 @@ class ChatProvider extends ChangeNotifier {
       final String lastMessageSenderId = roomData['lastMessageSenderId']?? '';
 
       // حتى لو كانت الغرفة موجودة مسبقاً دون رسائل، يجب التحقق قبل أول إرسال.
-      if (lastMessageSenderId.isEmpty &&
-          !await _canReceiveFirstMessage(senderUid: senderId, receiverUid: receiverId)) {
-        return false;
+      if (lastMessageSenderId.isEmpty) {
+        final failureReason = await _firstMessageFailureReason(
+          senderUid: senderId, receiverUid: receiverId);
+        if (failureReason != null) return ChatActionResult<bool>.failure(failureReason);
       }
 
       // فحص مسبق عشان الـ UI بس - لو رجع false القواعد رح تمنع الكتابة كمان
       if (isRequest &&!canSenderSend &&!actualIsFriend) {
         debugPrint('--- [Tini]: ممنوع الإرسال، بانتظار رد الطرف الآخر ---');
-        return false;
+        return const ChatActionResult<bool>.failure(ChatFailureReason.waitingForReply);
       }
 
       // [عرض مرة واحدة] لا نسمح بتطبيق الخيار على رسائل غير الصور والفيديو.
-      if (viewOnce && type != 'image' && type != 'video') return false;
-      if (viewOnce && (mediaUrl == null || mediaUrl.isEmpty)) return false;
+      if (viewOnce && type != 'image' && type != 'video') {
+        return const ChatActionResult<bool>.failure(ChatFailureReason.invalidMedia);
+      }
+      if (viewOnce && (mediaUrl == null || mediaUrl.isEmpty)) {
+        return const ChatActionResult<bool>.failure(ChatFailureReason.invalidMedia);
+      }
 
       String preview = '';
       if (type == 'text') {
@@ -885,7 +1024,7 @@ class ChatProvider extends ChangeNotifier {
       } catch (e) {}
 
       notifyListeners();
-      return true;
+      return const ChatActionResult<bool>.success(true);
     } on FirebaseException catch (e) {
       // لو القواعد رفضت الكتابة
       if (e.code == 'permission-denied') {
@@ -893,10 +1032,11 @@ class ChatProvider extends ChangeNotifier {
       } else {
         debugPrint('Error sending message: $e');
       }
-      return false;
+      return ChatActionResult<bool>.failure(e.code == 'permission-denied'
+          ? ChatFailureReason.permissionDenied : ChatFailureReason.technicalError);
     } catch (e) {
       debugPrint('Error sending message: $e');
-      return false;
+      return const ChatActionResult<bool>.failure(ChatFailureReason.technicalError);
     }
   }
 
