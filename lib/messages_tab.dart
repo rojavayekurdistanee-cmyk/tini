@@ -27,6 +27,42 @@ class MessagesTab extends StatefulWidget {
 
 class _MessagesTabState extends State<MessagesTab> {
   final ScrollController _inboxScrollController = ScrollController();
+  bool _isMessageRequestBannerBusy = false;
+
+  Future<void> _handleMessageRequestBannerAction(
+    BuildContext context, {
+    required bool allow,
+  }) async {
+    if (_isMessageRequestBannerBusy) return;
+    _isMessageRequestBannerBusy = true;
+    try {
+      final auth = Provider.of<custom.AuthProvider>(context, listen: false);
+      final bool saved = allow
+          ? await auth.updateMessageRequests(true)
+          : await auth.dismissMessageRequestBanner();
+      if (!saved && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تعذّر حفظ إعداد طلبات المراسلة. حاول مرة أخرى.'),
+            backgroundColor: Color(0xFFE53935),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[Tini] Message request banner action failed: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تعذّر حفظ إعداد طلبات المراسلة. حاول مرة أخرى.'),
+            backgroundColor: Color(0xFFE53935),
+          ),
+        );
+      }
+    } finally {
+      _isMessageRequestBannerBusy = false;
+    }
+  }
+
   TiniChatMessagePager? _privateRooms;
   TiniChatMessagePager? _groupRooms;
   Listenable? _inboxUpdates;
@@ -675,7 +711,7 @@ class _MessagesTabState extends State<MessagesTab> {
                                     IconButton(
                                       icon: const Icon(Icons.close, color: textGrey),
                                       onPressed: () {
-                                        Provider.of<custom.AuthProvider>(context, listen: false).updateMessageRequests(false);
+                                        _handleMessageRequestBannerAction(context, allow: false);
                                       },
                                     ),
                                     const SizedBox(width: 8),
@@ -688,7 +724,7 @@ class _MessagesTabState extends State<MessagesTab> {
                                     const SizedBox(width: 12),
                                     ElevatedButton(
                                       onPressed: () {
-                                        Provider.of<custom.AuthProvider>(context, listen: false).updateMessageRequests(true);
+                                        _handleMessageRequestBannerAction(context, allow: true);
                                       },
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: titiRed,

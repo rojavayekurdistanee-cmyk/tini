@@ -1613,27 +1613,62 @@ Future<void> removeFollower(String followerUid) async {
   bool isFriendSync(String targetUserId) {
     return _followingList.contains(targetUserId) && _followersList.contains(targetUserId);
   }
-  Future<void> updateMessageRequests(bool allow) async {
-  final User? user = FirebaseAuth.instance.currentUser;
-  if (user == null || _currentUser == null) return;
+  Future<bool> updateMessageRequests(bool allow) async {
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null || _currentUser == null) return false;
+    final session = _authSession;
 
-  try {
-    await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-      'allowMessageRequests': allow,
-      'hideMessageRequestBanner': true,
-    });
+    try {
+      // لا تُخفِ الشريط ولا تُحدِّث الحالة المحلية قبل نجاح حفظ Firestore.
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
+        'allowMessageRequests': allow,
+        'hideMessageRequestBanner': true,
+      });
+      if (!_isCurrentSession(user.uid, session) || _currentUser == null) return false;
 
-    _currentUser = _currentUser!.copyWith(
-      allowMessageRequests: allow,
-      hideMessageRequestBanner: true,
-    );
-    
-    await _saveAccountLocally();
-    notifyListeners();
-  } catch (_) {
-
+      _currentUser = _currentUser!.copyWith(
+        allowMessageRequests: allow,
+        hideMessageRequestBanner: true,
+      );
+      notifyListeners();
+      try {
+        await _saveAccountLocally();
+      } catch (e) {
+        // حفظ Firestore نجح؛ فشل التخزين المحلي لا يلغي الموافقة المحفوظة.
+        debugPrint('[Tini] Failed to cache message request consent: $e');
+      }
+      return true;
+    } catch (e) {
+      debugPrint('[Tini] Failed to save message request consent: $e');
+      return false;
+    }
   }
-}
+
+  Future<bool> dismissMessageRequestBanner() async {
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null || _currentUser == null) return false;
+    final session = _authSession;
+
+    try {
+      // علامة الإغلاق تخفي الشريط فقط، ولا تغيّر سماح طلبات المراسلة.
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
+        'hideMessageRequestBanner': true,
+      });
+      if (!_isCurrentSession(user.uid, session) || _currentUser == null) return false;
+
+      _currentUser = _currentUser!.copyWith(hideMessageRequestBanner: true);
+      notifyListeners();
+      try {
+        await _saveAccountLocally();
+      } catch (e) {
+        debugPrint('[Tini] Failed to cache message request banner dismissal: $e');
+      }
+      return true;
+    } catch (e) {
+      debugPrint('[Tini] Failed to dismiss message request banner: $e');
+      return false;
+    }
+  }
   // [Tini]: Private Account Toggle - V1
   Future<void> updatePrivateAccount(bool value) async {
     try {

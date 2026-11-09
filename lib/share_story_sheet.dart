@@ -73,43 +73,56 @@ class _ShareStorySheetState extends State<ShareStorySheet> {
     final provider = Provider.of<ChatProvider>(context, listen: false);
     final story = widget.story;
     final uid = widget.currentUid;
+    final selected = Set<String>.from(selectedIds);
+    final messenger = ScaffoldMessenger.maybeOf(context);
 
     Navigator.pop(context); // سكر الشيت أول
-    final parentContext = context;
+    var sentCount = 0;
 
-    for (String targetUid in selectedIds) {
+    for (String targetUid in selected) {
       if (FirebaseAuth.instance.currentUser?.uid != uid ||
           !AudienceMessagePolicy.canView(story)) return;
-      final user = mutuals.firstWhere((u) => u.uid == targetUid);
-      final ids = [uid, targetUid]..sort();
-      final roomId = ids.join('_');
-
-      await provider.startChat(
-        viewedUid: targetUid,
-        displayFullName: user.name,
-        displayProfileImg: user.img,
-        isFriend: true,
-      );
-      if (FirebaseAuth.instance.currentUser?.uid != uid ||
-          !AudienceMessagePolicy.canView(story)) return;
-      await provider.sendMessage(
-        roomId: roomId,
-        senderId: uid,
-        receiverId: targetUid,
-        type: story['type'] == 'video'? 'video' : 'image',
-        text: '',
-        mediaUrl: story['mediaUrl'],
-        extraData: AudienceMessagePolicy.sourceFields(story),
-        isFriend: true,
-      );
+      try {
+        final user = mutuals.firstWhere((u) => u.uid == targetUid);
+        // نستخدم معرف الغرفة الذي أعادته الدالة بعد فحص صلاحيات المراسلة.
+        final roomId = await provider.startChat(
+          viewedUid: targetUid,
+          displayFullName: user.name,
+          displayProfileImg: user.img,
+          isFriend: true,
+        );
+        if (roomId.isEmpty) continue;
+        if (FirebaseAuth.instance.currentUser?.uid != uid ||
+            !AudienceMessagePolicy.canView(story)) return;
+        final sent = await provider.sendMessage(
+          roomId: roomId,
+          senderId: uid,
+          receiverId: targetUid,
+          type: story['type'] == 'video'? 'video' : 'image',
+          text: '',
+          mediaUrl: story['mediaUrl'],
+          extraData: AudienceMessagePolicy.sourceFields(story),
+          isFriend: true,
+        );
+        if (sent) sentCount++;
+      } catch (e) {
+        debugPrint('Error sharing story to $targetUid: $e');
+      }
     }
 
     await Future.delayed(const Duration(milliseconds: 200));
-    if (mounted) {
-      ScaffoldMessenger.of(parentContext).showSnackBar(
+    if (messenger != null && messenger.mounted) {
+      messenger.showSnackBar(
         SnackBar(
-          content: Text('تمت المشاركة مع ${selectedIds.length}', style: const TextStyle(color: Colors.white)),
-          backgroundColor: kTeal,
+          content: Text(
+            sentCount == selected.length
+                ? 'تمت المشاركة مع $sentCount'
+                : sentCount > 0
+                    ? 'تمت المشاركة مع $sentCount من أصل ${selected.length}'
+                    : 'تعذر إرسال القصة. تحقق من إعدادات المراسلة',
+            style: const TextStyle(color: Colors.white),
+          ),
+          backgroundColor: sentCount > 0 ? kTeal : const Color(0xFFE53935),
         ),
       );
     }

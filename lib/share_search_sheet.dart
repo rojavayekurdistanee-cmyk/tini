@@ -64,6 +64,8 @@ class _ShareSearchSheetState extends State<ShareSearchSheet> {
     final targetProfileId = widget.profileUserId?? myUid;
     final chatProvider = Provider.of<ChatProvider>(context, listen: false);
     final authProvider = Provider.of<custom.AuthProvider>(context, listen: false);
+    // نخزن مرجع الإشعارات قبل أي await لأن الشيت قد يُغلق أثناء تحميل البيانات.
+    final messenger = ScaffoldMessenger.maybeOf(context);
 
     // خذ بيانات البروفايل قبل ما تسكر
     DocumentSnapshot targetUserDoc = await FirebaseFirestore.instance.collection('users').doc(targetProfileId).get();
@@ -78,15 +80,10 @@ class _ShareSearchSheetState extends State<ShareSearchSheet> {
 
     // 1. سكر فوراً - أهم خطوة
     if (mounted) Navigator.pop(context);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("تمت المشاركة مع ${selected.length} صديق", textAlign: TextAlign.center), backgroundColor: Colors.teal),
-      );
-    }
 
     // 2. الارسال بالخلفية وبالمتوازي
     try {
-      await Future.wait(selected.map((friendUid) async {
+      final results = await Future.wait(selected.map((friendUid) async {
         try {
           final cachedUser = cacheMap[friendUid];
           bool isFriend = await chatProvider.checkIfFriend(myUid, friendUid);
@@ -96,39 +93,54 @@ class _ShareSearchSheetState extends State<ShareSearchSheet> {
             displayProfileImg: cachedUser?.profileImg?? '',
             isFriend: isFriend,
           );
-          if (roomId.isEmpty) return;
+          if (roomId.isEmpty) return false;
 
-          final batch = FirebaseFirestore.instance.batch();
-          final msgRef = FirebaseFirestore.instance.collection('chat_rooms').doc(roomId).collection('messages').doc();
-          final roomRef = FirebaseFirestore.instance.collection('chat_rooms').doc(roomId);
-
-          batch.set(msgRef, {
-            'senderId': myUid,
-            'receiverId': friendUid,
-            'type': 'profile_share',
-            'text': profileLink,
-            'profileUid': targetProfileId,
-            'profileName': targetName,
-            'profileUsername': targetUsername,
-            'profileImg': targetImg,
-            'profileLink': profileLink,
-            'timestamp': FieldValue.serverTimestamp(),
-          });
-
-          batch.set(roomRef, {
-            'lastMessage': 'شارك ملف شخصي: @$targetUsername',
-            'lastMessageTime': FieldValue.serverTimestamp(),
-            'lastMessageSenderId': myUid,
-            'unreadCount.$friendUid': FieldValue.increment(1),
-          }, SetOptions(merge: true));
-
-          await batch.commit();
+          // مسار المراسلة الموحد يتحقق من السماح والخصوصية وحد الرسالة الأولى.
+          // لا نكتب رسالة مباشرة إلى Firestore كي لا نتجاوز canSendMore.
+          return await chatProvider.sendMessage(
+            roomId: roomId,
+            senderId: myUid,
+            receiverId: friendUid,
+            type: 'profile_share',
+            text: profileLink,
+            isFriend: isFriend,
+            extraData: {
+              'receiverId': friendUid,
+              'profileUid': targetProfileId,
+              'profileName': targetName,
+              'profileUsername': targetUsername,
+              'profileImg': targetImg,
+              'profileLink': profileLink,
+            },
+          );
         } catch (e) {
           debugPrint('Error sending to $friendUid: $e');
+          return false;
         }
       }));
+
+      final sentCount = results.where((sent) => sent).length;
+      if (messenger != null && messenger.mounted) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(
+            sentCount == selected.length
+                ? "تمت المشاركة مع $sentCount صديق"
+                : sentCount > 0
+                    ? "تمت المشاركة مع $sentCount من أصل ${selected.length}"
+                    : "تعذر إرسال المشاركة. تحقق من إعدادات المراسلة",
+            textAlign: TextAlign.center,
+          ),
+          backgroundColor: sentCount > 0 ? Colors.teal : const Color(0xFFE53935),
+        ));
+      }
     } catch (e) {
       debugPrint('Send error: $e');
+      if (messenger != null && messenger.mounted) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text('تعذر إرسال المشاركة', textAlign: TextAlign.center),
+          backgroundColor: Color(0xFFE53935),
+        ));
+      }
     }
   }
 

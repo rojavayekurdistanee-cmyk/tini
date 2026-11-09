@@ -583,6 +583,50 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
+  // [Tini]: التحقق من موافقة المستلم وخصوصية طلب المراسلة الأولى.
+  // هذا الفحص لا يغيّر حالة الطلب ولا يمنع الرد ضمن محادثة بدأت بالفعل.
+  Future<bool> _canReceiveFirstMessage({
+    required String senderUid,
+    required String receiverUid,
+  }) async {
+    try {
+      // قراءة الخادم حتى لا نسمح بطلب جديد بناءً على إعداد مخزّن قديم.
+      final receiverDoc = await _firestore.collection('users').doc(receiverUid)
+          .get(const GetOptions(source: Source.server));
+      final receiverData = receiverDoc.data();
+      if (receiverData == null || receiverData['allowMessageRequests'] != true) {
+        debugPrint('--- [MSG PRIVACY]: message requests not allowed ---');
+        return false;
+      }
+
+      final String privacy = receiverData['messageRequestPrivacy'] ?? 'followers';
+      if (privacy == 'all') return true;
+      if (privacy == 'nobody') {
+        debugPrint('--- [MSG PRIVACY]: nobody - blocked ---');
+        return false;
+      }
+      if (privacy == 'followers') {
+        // "متابعوك" تعني أن المرسل يتابع المستلم، وليس العكس.
+        final followerDoc = await _firestore.collection('users').doc(receiverUid)
+            .collection('followers').doc(senderUid)
+            .get(const GetOptions(source: Source.server));
+        if (!followerDoc.exists) {
+          debugPrint('--- [MSG PRIVACY]: sender is not a follower ---');
+          return false;
+        }
+        return true;
+      }
+
+      // لا نسمح بطلب جديد عند وجود قيمة خصوصية غير معروفة.
+      debugPrint('--- [MSG PRIVACY]: unknown privacy setting: $privacy ---');
+      return false;
+    } catch (e) {
+      // تعذّر التحقق لا يُعتبر موافقة، ولا يغيّر المحادثات الحالية.
+      debugPrint('--- [MSG PRIVACY]: failed to verify first-message permission: $e ---');
+      return false;
+    }
+  }
+
   Future<String> startChat({
     required String viewedUid,
     required String displayFullName,
@@ -600,33 +644,18 @@ class ChatProvider extends ChangeNotifier {
         return '';
       }
 
-      // ✅ NEW - فحص إعدادات طلبات المراسلة انستغرام
-      try {
-        final otherDoc = await _firestore.collection('users').doc(viewedUid).get();
-        final String privacy = otherDoc.data()?['messageRequestPrivacy'] ?? 'followers';
-        if (privacy == 'nobody' && !isFriend) {
-          debugPrint('--- [MSG PRIVACY]: nobody - blocked ---');
-          return '';
-        }
-        if (privacy == 'followers' && !isFriend) {
-          // متابعوك فقط - نتحقق هل انت متابعو؟
-          final followerDoc = await _firestore.collection('users').doc(viewedUid).collection('followers').doc(currentUid).get();
-          final followingDoc = await _firestore.collection('users').doc(viewedUid).collection('following').doc(currentUid).get();
-          if (!followerDoc.exists && !followingDoc.exists) {
-            // مش متابعك ولا انت متابعه و مش صديق - اسمح بس كطلب مراسلة (isRequest)
-            // لو بدك تمنع نهائيا فك التعليق:
-            // return '';
-          }
-        }
-      } catch (_) {}
-
-      // [Tini]: شلنا فحص allowMessageRequests نهائياً
-      // الغريب بقدر يفتح شات ويبعت رسالة وحدة بكل الحالات
-
       final List<String> sortedIds = [currentUid, viewedUid]..sort();
       final roomId = sortedIds.join('_');
       final roomRef = _firestore.collection('chat_rooms').doc(roomId);
       final doc = await roomRef.get();
+
+      // التحقق مطلوب عند بدء أول رسالة فقط، وليس عند فتح محادثة جارية.
+      final bool hasFirstMessage = doc.exists &&
+          (doc.data()?['lastMessageSenderId'] ?? '').toString().isNotEmpty;
+      if (!hasFirstMessage &&
+          !await _canReceiveFirstMessage(senderUid: currentUid, receiverUid: viewedUid)) {
+        return '';
+      }
 
       final oldRoom = doc.data();
       final oldInfo = Map<String, dynamic>.from(oldRoom?['participantsInfo'] ?? {});
@@ -736,6 +765,12 @@ class ChatProvider extends ChangeNotifier {
       final Map<String, dynamic> canSendMoreMap = Map<String, dynamic>.from(roomData['canSendMore']?? {});
       final bool canSenderSend = canSendMoreMap[senderId]?? true;
       final String lastMessageSenderId = roomData['lastMessageSenderId']?? '';
+
+      // حتى لو كانت الغرفة موجودة مسبقاً دون رسائل، يجب التحقق قبل أول إرسال.
+      if (lastMessageSenderId.isEmpty &&
+          !await _canReceiveFirstMessage(senderUid: senderId, receiverUid: receiverId)) {
+        return false;
+      }
 
       // فحص مسبق عشان الـ UI بس - لو رجع false القواعد رح تمنع الكتابة كمان
       if (isRequest &&!canSenderSend &&!actualIsFriend) {
