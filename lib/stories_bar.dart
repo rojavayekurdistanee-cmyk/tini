@@ -391,20 +391,29 @@ class StoriesBar extends StatelessWidget {
           );
         }
 
+        bool openingChat = false;
         return GestureDetector(
           onTap: () async {
-            if (!AudienceAccess.instance.canViewProfile(uid)) return;
+            if (openingChat || !AudienceAccess.instance.canViewProfile(uid)) return;
             if (hasStories) {
               Navigator.push(context, MaterialPageRoute(builder: (_) => Story(userId: uid)));
             } else {
-              final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-              await chatProvider.startChat(
-                viewedUid: uid,
-                displayFullName: name,
-                displayProfileImg: profileImg,
-                isFriend: true,
-              );
-              if (context.mounted) {
+              openingChat = true;
+              try {
+                final chatProvider = Provider.of<ChatProvider>(context, listen: false);
+                final isActuallyFriend = await chatProvider.checkIfFriend(currentUid, uid);
+                if (!context.mounted || FirebaseAuth.instance.currentUser?.uid != currentUid) return;
+                final result = await chatProvider.startChatWithReason(
+                  viewedUid: uid,
+                  displayFullName: name,
+                  displayProfileImg: profileImg,
+                  isFriend: isActuallyFriend,
+                );
+                if (!context.mounted || FirebaseAuth.instance.currentUser?.uid != currentUid) return;
+                if (!result.isSuccess) {
+                  showTiniChatAccessNotice(context, result.failureReason);
+                  return;
+                }
                 Navigator.push(
                   context,
                   MaterialPageRoute(
@@ -412,10 +421,16 @@ class StoriesBar extends StatelessWidget {
                       viewedUid: uid,
                       displayFullName: name,
                       displayProfileImg: profileImg,
-                      isFriend: true,
+                      isFriend: isActuallyFriend,
                     ),
                   ),
                 );
+              } catch (e) {
+                if (context.mounted && FirebaseAuth.instance.currentUser?.uid == currentUid) {
+                  showTiniChatAccessNotice(context, ChatFailureReason.technicalError);
+                }
+              } finally {
+                openingChat = false;
               }
             }
           },

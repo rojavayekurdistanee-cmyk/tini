@@ -1162,38 +1162,38 @@ if (!isOwnProfile)
                   ),
                   onPressed: () async {
                     final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-                    final currentUid = FirebaseAuth.instance.currentUser!.uid;
-                    bool isActuallyFriend = await chatProvider.checkIfFriend(currentUid, viewedUid);
-                    String roomId = await chatProvider.startChat(
+                    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                    if (currentUid == null) return;
+                    bool isActuallyFriend;
+                    try {
+                      isActuallyFriend = await chatProvider.checkIfFriend(currentUid, viewedUid);
+                    } catch (e) {
+                      if (context.mounted) showTiniChatAccessNotice(context, ChatFailureReason.technicalError);
+                      return;
+                    }
+                    if (!context.mounted || FirebaseAuth.instance.currentUser?.uid != currentUid) return;
+                    final result = await chatProvider.startChatWithReason(
                       viewedUid: viewedUid,
                       displayFullName: fullName,
                       displayProfileImg: profileImg,
                       isFriend: isActuallyFriend,
                     );
-                    if (roomId.isEmpty) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('تعذر فتح المحادثة، حاول مرة أخرى', textAlign: TextAlign.center),
-                            backgroundColor: Colors.redAccent,
-                          ),
-                        );
-                      }
+                    if (!context.mounted || FirebaseAuth.instance.currentUser?.uid != currentUid) return;
+                    if (!result.isSuccess) {
+                      showTiniChatAccessNotice(context, result.failureReason);
                       return;
                     }
-                    if (context.mounted) {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => ChatScreen(
-                            viewedUid: viewedUid,
-                            displayFullName: fullName,
-                            displayProfileImg: profileImg,
-                            isFriend: isActuallyFriend,
-                          ),
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatScreen(
+                          viewedUid: viewedUid,
+                          displayFullName: fullName,
+                          displayProfileImg: profileImg,
+                          isFriend: isActuallyFriend,
                         ),
-                      );
-                    }
+                      ),
+                    );
                   },
                   child: const Text("مراسلة", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 ),

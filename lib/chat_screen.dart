@@ -35,6 +35,61 @@ import 'titi_input_bar.dart';
 import 'view_once_viewer_screen.dart'; // [عرض مرة واحدة - الخاص]
 import 'view_once_icon.dart'; // [عرض مرة واحدة - الخاص]
 
+// [Tini - Messaging]: إشعار موحد يميّز قيود الخصوصية عن الأخطاء التقنية.
+// تُستخدم الدالة أيضاً في زر المراسلة وفي شريط القصص دون تعديل ChatProvider.
+SnackBar _tiniChatAccessSnackBar(ChatFailureReason? reason) {
+  final privacy = reason?.isPrivacyRestriction ?? false;
+  return SnackBar(
+    behavior: SnackBarBehavior.floating,
+    backgroundColor: const Color(0xFF1A222C),
+    elevation: 5,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    margin: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+    duration: const Duration(seconds: 4),
+    content: Row(
+      children: [
+        Icon(
+          privacy ? Icons.shield_outlined : Icons.error_outline,
+          color: privacy ? Colors.white54 : const Color(0xFFE53935),
+          size: 23,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                privacy ? 'خصوصية المراسلة' : 'تعذّر فتح المحادثة',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 3),
+              Text(
+                reason?.userMessage ?? 'تعذّر التحقق من إمكانية المراسلة. حاول مرة أخرى.',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+void _showTiniChatAccessNoticeOnMessenger(
+  ScaffoldMessengerState messenger,
+  ChatFailureReason? reason,
+) {
+  if (!messenger.mounted) return;
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(_tiniChatAccessSnackBar(reason));
+}
+
+void showTiniChatAccessNotice(BuildContext context, ChatFailureReason? reason) {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (messenger != null) _showTiniChatAccessNoticeOnMessenger(messenger, reason);
+}
+
 class ChatScreen extends StatefulWidget {
   final String viewedUid;
   final String displayFullName;
@@ -74,6 +129,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final render = _composerKey.currentContext?.findRenderObject();
     if (render is! RenderBox || !render.hasSize) return;
     final height = render.size.height;
+    // لا نستخدم قياساً غير منطقي من إطار فاشل في بناء الواجهة.
+    if (!height.isFinite || height < 0 || height > MediaQuery.sizeOf(context).height) return;
     if ((height - _composerHeight).abs() > 0.5) {
       setState(() => _composerHeight = height);
     }
@@ -180,36 +237,44 @@ class _ChatScreenState extends State<ChatScreen> {
     if (currentUserId == null || !mounted) return;
     final provider = Provider.of<ChatProvider>(context, listen: false);
 
-  final roomIdResult = await provider.startChat(
+  final result = await provider.startChatWithReason(
     viewedUid: widget.viewedUid,
     displayFullName: widget.displayFullName,
     displayProfileImg: widget.displayProfileImg,
     isFriend: widget.isFriend,
   );
-  if (!mounted) return;
+  if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
 
-  if (roomIdResult.isEmpty) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('هذا المستخدم لا يسمح بطلبات المراسلة'), backgroundColor: Color(0xFFE53935)),
+  if (!result.isSuccess || (result.value ?? '').isEmpty) {
+    // احتفظ بمرجع الـ ScaffoldMessenger قبل الرجوع حتى يظهر الإشعار على الشاشة السابقة.
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) navigator.pop();
+    if (messenger != null) {
+      _showTiniChatAccessNoticeOnMessenger(
+        messenger,
+        result.failureReason ?? ChatFailureReason.roomNotFound,
       );
-      Navigator.pop(context);
     }
     return;
   }
 
   // [FIX] نستخدم نفس الـ roomId اللي رجع، ونادي markAsRead اللي بيفرق بين زر مفعل/مطفي
-  _chatRoomId = roomIdResult.isNotEmpty ? roomIdResult : _chatRoomId;
-  await provider.markAsRead(_chatRoomId, currentUserId);
-
+  _chatRoomId = result.value!;
+  try {
+    await provider.markAsRead(_chatRoomId, currentUserId);
     final roomDoc = await FirebaseFirestore.instance.collection('chat_rooms').doc(_chatRoomId).get();
-    if (!mounted) return;
-    if (roomDoc.exists) {
-      final data = roomDoc.data()!;
+    if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+    final data = roomDoc.data();
+    if (data != null) {
       setState(() {
-        _participantsInfo = Map<String, dynamic>.from(data['participantsInfo']?? {});
+        _participantsInfo = Map<String, dynamic>.from(data['participantsInfo'] ?? {});
       });
     }
+  } catch (e) {
+    // فشل تحديث حالة القراءة لا يجب أن يُسقط شاشة محادثة فُتحت بنجاح.
+    debugPrint('Error loading chat room after opening: $e');
+  }
   }
 
   @override
@@ -1419,7 +1484,8 @@ appBar: AppBar(
                         stream: _peerStatusStream,
                         builder: (context, targetSnap) {
                           if (!targetSnap.hasData ||!targetSnap.data!.exists) return const SizedBox.shrink();
-                          final targetData = targetSnap.data!.data() as Map<String, dynamic>;
+                          final targetData = targetSnap.data!.data();
+                          if (targetData is! Map<String, dynamic>) return const SizedBox.shrink();
                           final bool targetShow = targetData['showActivityStatus']?? true;
                           final bool isOnline = targetData['isOnline']?? false;
                           final Timestamp? lastSeen = targetData['lastSeen'] as Timestamp?;
@@ -1538,8 +1604,9 @@ appBar: AppBar(
                 StreamBuilder<DocumentSnapshot>(
                   stream: _roomStream,
                   builder: (context, snap) {
-                    if (!snap.hasData) return const SizedBox.shrink();
-                    final data = snap.data!.data() as Map<String, dynamic>;
+                    if (!snap.hasData || !snap.data!.exists) return const SizedBox.shrink();
+                    final data = snap.data!.data();
+                    if (data is! Map<String, dynamic>) return const SizedBox.shrink();
                     final bool isReq = data['isRequest'] ?? false;
                     final String lastSender = data['lastMessageSenderId'] ?? '';
                     final bool isMeSender = lastSender == currentUserId;

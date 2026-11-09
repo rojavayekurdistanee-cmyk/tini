@@ -717,7 +717,7 @@ class _MessagesTabState extends State<MessagesTab> {
                                     const SizedBox(width: 8),
                                     const Expanded(
                                       child: Text(
-                                        "السماح بطلبات الرسائل من جهات الاتصال المحتملة وغيرها",
+                                        "السماح باستقبال طلبات المراسلة",
                                         style: TextStyle(color: Colors.white, fontSize: 13),
                                       ),
                                     ),
