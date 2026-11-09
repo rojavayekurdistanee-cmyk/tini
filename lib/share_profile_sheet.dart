@@ -4,6 +4,7 @@ import 'package:iconsax/iconsax.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
@@ -12,6 +13,83 @@ import 'chat_provider.dart';
 import 'user_model.dart';
 import 'share_search_sheet.dart';
 import 'block_service.dart'; // [إضافة جديدة] منطق الحظر المنفصل
+
+void _showTiniShareOutcome(
+  ScaffoldMessengerState? messenger,
+  List<ChatFailureReason?> results, {
+  String itemLabel = 'المشاركة',
+}) {
+  if (messenger == null || !messenger.mounted || results.isEmpty) return;
+
+  final failureCounts = <ChatFailureReason, int>{};
+  for (final reason in results) {
+    if (reason != null) {
+      failureCounts.update(reason, (count) => count + 1, ifAbsent: () => 1);
+    }
+  }
+  final successful = results.length - failureCounts.values.fold<int>(0, (sum, count) => sum + count);
+  final failed = results.length - successful;
+  final title = failed == 0
+      ? 'تمت المشاركة مع $successful'
+      : successful > 0
+          ? 'تمت المشاركة مع $successful من أصل ${results.length}، وفشل $failed'
+          : 'تعذّر إرسال $itemLabel إلى $failed';
+
+  final details = failureCounts.entries.toList();
+  final reasonText = details.isEmpty
+      ? ''
+      : details.length == 1
+          ? details.first.key.userMessage
+          : [
+              ...details.take(2).map((entry) => '${entry.value}: ${entry.key.userMessage}'),
+              if (details.length > 2) 'وأسباب أخرى لدى ${details.skip(2).fold<int>(0, (sum, entry) => sum + entry.value)} حسابات.',
+            ].join('\n');
+  final hasTechnicalError = failureCounts.keys.any((reason) => !reason.isPrivacyRestriction);
+  final iconColor = failed == 0
+      ? Colors.teal
+      : hasTechnicalError
+          ? const Color(0xFFE53935)
+          : Colors.white54;
+
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(SnackBar(
+    behavior: SnackBarBehavior.floating,
+    backgroundColor: const Color(0xFF1A222C),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    duration: Duration(seconds: failed == 0 ? 3 : 5),
+    content: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          failed == 0 ? Icons.check_circle_outline : hasTechnicalError ? Icons.error_outline : Icons.info_outline,
+          color: iconColor,
+          size: 22,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              if (reasonText.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(reasonText, style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    maxLines: 5, overflow: TextOverflow.ellipsis),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  ));
+}
+
+ChatFailureReason _shareErrorReason(Object error) {
+  return error is FirebaseException && error.code == 'permission-denied'
+      ? ChatFailureReason.permissionDenied
+      : ChatFailureReason.technicalError;
+}
 
 class ShareProfileSheet extends StatefulWidget {
   final String? profileUserId;
@@ -25,6 +103,7 @@ class ShareProfileSheet extends StatefulWidget {
 
 class _ShareProfileSheetState extends State<ShareProfileSheet> {
   final ValueNotifier<Set<String>> selectedNotifier = ValueNotifier({});
+  bool _sharingInProgress = false;
   List<String>? _cachedFriendIds;
   Future<List<UserModel>>? _usersFuture;
   List<UserModel> _allUsersCache = [];
@@ -52,8 +131,10 @@ class _ShareProfileSheetState extends State<ShareProfileSheet> {
   }
 
   Future<void> sendToSelectedFriends() async {
+    if (_sharingInProgress) return;
     final selected = Set<String>.from(selectedNotifier.value);
     if (selected.isEmpty) return;
+    _sharingInProgress = true;
 
     final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     final targetProfileId = widget.profileUserId ?? myUid;
@@ -62,77 +143,84 @@ class _ShareProfileSheetState extends State<ShareProfileSheet> {
     // نخزن مرجع الإشعارات قبل أي await لأن الشيت قد يُغلق أثناء تحميل البيانات.
     final messenger = ScaffoldMessenger.maybeOf(context);
 
-    DocumentSnapshot targetUserDoc = await FirebaseFirestore.instance.collection('users').doc(targetProfileId).get();
-    Map<String, dynamic>? targetData = targetUserDoc.data() as Map<String, dynamic>?;
-    String targetName = targetData?['fullName'] ?? authProvider.fullName;
-    String targetImg = targetData?['profileImg'] ?? authProvider.profileImg;
-    String targetUsername = targetData?['username'] ?? authProvider.username;
-    String profileLink = "https://titistar.app/user/$targetProfileId";
-
-    final Map<String, UserModel> cacheMap = {for (var u in _allUsersCache) u.uid: u};
-
-    if (mounted) Navigator.pop(context);
-
-    try {
-      final results = await Future.wait(selected.map((friendUid) async {
-        try {
-          final cachedUser = cacheMap[friendUid];
-          bool isFriend = await chatProvider.checkIfFriend(myUid, friendUid);
-          String roomId = await chatProvider.startChat(
-            viewedUid: friendUid,
-            displayFullName: cachedUser?.fullName ?? 'صديق',
-            displayProfileImg: cachedUser?.profileImg ?? '',
-            isFriend: isFriend,
-          );
-          if (roomId.isEmpty) return false;
-
-          // مسار المراسلة الموحد يتحقق من السماح والخصوصية وحد الرسالة الأولى.
-          // لا نكتب رسالة مباشرة إلى Firestore كي لا نتجاوز canSendMore.
-          return await chatProvider.sendMessage(
-            roomId: roomId,
-            senderId: myUid,
-            receiverId: friendUid,
-            type: 'profile_share',
-            text: profileLink,
-            isFriend: isFriend,
-            extraData: {
-              'receiverId': friendUid,
-              'profileUid': targetProfileId,
-              'profileName': targetName,
-              'profileUsername': targetUsername,
-              'profileImg': targetImg,
-              'profileLink': profileLink,
-            },
-          );
-        } catch (e) {
-          debugPrint('Error sending to $friendUid: $e');
-          return false;
-        }
-      }));
-
-      final sentCount = results.where((sent) => sent).length;
-      if (messenger != null && messenger.mounted) {
-        messenger.showSnackBar(SnackBar(
-          content: Text(
-            sentCount == selected.length
-                ? "تمت المشاركة مع $sentCount صديق"
-                : sentCount > 0
-                    ? "تمت المشاركة مع $sentCount من أصل ${selected.length}"
-                    : "تعذر إرسال المشاركة. تحقق من إعدادات المراسلة",
-            textAlign: TextAlign.center,
-          ),
-          backgroundColor: sentCount > 0 ? Colors.teal : const Color(0xFFE53935),
-        ));
-      }
-    } catch (e) {
-      debugPrint('Send error: $e');
-      if (messenger != null && messenger.mounted) {
-        messenger.showSnackBar(const SnackBar(
-          content: Text('تعذر إرسال المشاركة', textAlign: TextAlign.center),
-          backgroundColor: Color(0xFFE53935),
-        ));
-      }
+    if (myUid.isEmpty || targetProfileId.isEmpty) {
+      _showTiniShareOutcome(messenger,
+          List<ChatFailureReason?>.filled(selected.length, ChatFailureReason.notAuthenticated));
+      _sharingInProgress = false;
+      return;
     }
+
+    // نقرأ معلومات البروفايل قبل إغلاق النافذة؛ إذا فشلت القراءة لا نبدأ الإرسال.
+    late final String targetName;
+    late final String targetImg;
+    late final String targetUsername;
+    try {
+      final targetUserDoc = await FirebaseFirestore.instance.collection('users').doc(targetProfileId).get();
+      final targetData = targetUserDoc.data() ?? <String, dynamic>{};
+      targetName = (targetData['fullName'] ?? authProvider.fullName).toString();
+      targetImg = (targetData['profileImg'] ?? authProvider.profileImg).toString();
+      targetUsername = (targetData['username'] ?? authProvider.username).toString();
+    } catch (error) {
+      debugPrint('Error reading shared profile: $error');
+      _showTiniShareOutcome(messenger,
+          List<ChatFailureReason?>.filled(selected.length, _shareErrorReason(error)));
+      _sharingInProgress = false;
+      return;
+    }
+    if (!mounted) return;
+    final profileLink = 'https://titistar.app/user/$targetProfileId';
+    final cacheMap = <String, UserModel>{for (final user in _allUsersCache) user.uid: user};
+
+    Navigator.pop(context);
+
+    // كل مستلم يرجع نتيجته بنفسه: null = نجاح، وغير ذلك = سبب فشل محدد.
+    // Future.wait يحافظ على نتائج المستلمين بالتوازي دون متغيرات حالة مشتركة.
+    final results = await Future.wait<ChatFailureReason?>(selected.map((friendUid) async {
+      if (FirebaseAuth.instance.currentUser?.uid != myUid) return ChatFailureReason.notAuthenticated;
+      try {
+        final cachedUser = cacheMap[friendUid];
+        final isFriend = await chatProvider.checkIfFriend(myUid, friendUid);
+        if (FirebaseAuth.instance.currentUser?.uid != myUid) return ChatFailureReason.notAuthenticated;
+        final opened = await chatProvider.startChatWithReason(
+          viewedUid: friendUid,
+          displayFullName: cachedUser?.fullName ?? 'صديق',
+          displayProfileImg: cachedUser?.profileImg ?? '',
+          isFriend: isFriend,
+        );
+        final roomId = opened.value;
+        if (!opened.isSuccess || roomId == null || roomId.isEmpty) {
+          return opened.failureReason ?? ChatFailureReason.technicalError;
+        }
+        if (FirebaseAuth.instance.currentUser?.uid != myUid) return ChatFailureReason.notAuthenticated;
+
+        // مسار المراسلة الموحد يتحقق من السماح والخصوصية وحد الرسالة الأولى.
+        // لا نكتب رسالة مباشرة إلى Firestore كي لا نتجاوز canSendMore.
+        final sent = await chatProvider.sendMessageWithReason(
+          roomId: roomId,
+          senderId: myUid,
+          receiverId: friendUid,
+          type: 'profile_share',
+          text: profileLink,
+          isFriend: isFriend,
+          extraData: {
+            'receiverId': friendUid,
+            'profileUid': targetProfileId,
+            'profileName': targetName,
+            'profileUsername': targetUsername,
+            'profileImg': targetImg,
+            'profileLink': profileLink,
+          },
+        );
+        return sent.isSuccess && sent.value == true
+            ? null
+            : sent.failureReason ?? ChatFailureReason.technicalError;
+      } catch (error) {
+        debugPrint('Error sending profile share to $friendUid: $error');
+        return _shareErrorReason(error);
+      }
+    }));
+
+    _showTiniShareOutcome(messenger, results);
   }
 
   @override

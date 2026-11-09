@@ -2,9 +2,87 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'audience_message_gate.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
 import 'package:provider/provider.dart';
 import 'chat_provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+
+void _showTiniShareOutcome(
+  ScaffoldMessengerState? messenger,
+  List<ChatFailureReason?> results, {
+  String itemLabel = 'المشاركة',
+}) {
+  if (messenger == null || !messenger.mounted || results.isEmpty) return;
+
+  final failureCounts = <ChatFailureReason, int>{};
+  for (final reason in results) {
+    if (reason != null) {
+      failureCounts.update(reason, (count) => count + 1, ifAbsent: () => 1);
+    }
+  }
+  final successful = results.length - failureCounts.values.fold<int>(0, (sum, count) => sum + count);
+  final failed = results.length - successful;
+  final title = failed == 0
+      ? 'تمت المشاركة مع $successful'
+      : successful > 0
+          ? 'تمت المشاركة مع $successful من أصل ${results.length}، وفشل $failed'
+          : 'تعذّر إرسال $itemLabel إلى $failed';
+
+  final details = failureCounts.entries.toList();
+  final reasonText = details.isEmpty
+      ? ''
+      : details.length == 1
+          ? details.first.key.userMessage
+          : [
+              ...details.take(2).map((entry) => '${entry.value}: ${entry.key.userMessage}'),
+              if (details.length > 2) 'وأسباب أخرى لدى ${details.skip(2).fold<int>(0, (sum, entry) => sum + entry.value)} حسابات.',
+            ].join('\n');
+  final hasTechnicalError = failureCounts.keys.any((reason) => !reason.isPrivacyRestriction);
+  final iconColor = failed == 0
+      ? Colors.teal
+      : hasTechnicalError
+          ? const Color(0xFFE53935)
+          : Colors.white54;
+
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(SnackBar(
+    behavior: SnackBarBehavior.floating,
+    backgroundColor: const Color(0xFF1A222C),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    duration: Duration(seconds: failed == 0 ? 3 : 5),
+    content: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          failed == 0 ? Icons.check_circle_outline : hasTechnicalError ? Icons.error_outline : Icons.info_outline,
+          color: iconColor,
+          size: 22,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              if (reasonText.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(reasonText, style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    maxLines: 5, overflow: TextOverflow.ellipsis),
+              ],
+            ],
+          ),
+        ),
+      ],
+    ),
+  ));
+}
+
+ChatFailureReason _shareErrorReason(Object error) {
+  return error is FirebaseException && error.code == 'permission-denied'
+      ? ChatFailureReason.permissionDenied
+      : ChatFailureReason.technicalError;
+}
 
 // ألوان Tini
 const Color kSurface = Color(0xFF1A222C);
@@ -70,62 +148,78 @@ class _ShareStorySheetState extends State<ShareStorySheet> {
   Future<void> _send() async {
     if (FirebaseAuth.instance.currentUser?.uid != widget.currentUid ||
         !AudienceMessagePolicy.canView(widget.story)) return;
+    final selected = Set<String>.from(selectedIds);
+    if (selected.isEmpty) return;
+
     final provider = Provider.of<ChatProvider>(context, listen: false);
     final story = widget.story;
     final uid = widget.currentUid;
-    final selected = Set<String>.from(selectedIds);
     final messenger = ScaffoldMessenger.maybeOf(context);
-
+    final users = <String, UserModel>{for (final user in mutuals) user.uid: user};
     Navigator.pop(context); // سكر الشيت أول
-    var sentCount = 0;
 
-    for (String targetUid in selected) {
-      if (FirebaseAuth.instance.currentUser?.uid != uid ||
-          !AudienceMessagePolicy.canView(story)) return;
+    final results = <ChatFailureReason?>[];
+    for (final targetUid in selected) {
+      // منع استمرار مشاركة القصة إذا تغير الحساب أو صلاحية مشاهدتها أثناء الإرسال.
+      final accountChanged = FirebaseAuth.instance.currentUser?.uid != uid;
+      if (accountChanged || !AudienceMessagePolicy.canView(story)) {
+        final reason = accountChanged ? ChatFailureReason.notAuthenticated : ChatFailureReason.permissionDenied;
+        results.addAll(List<ChatFailureReason?>.filled(selected.length - results.length, reason));
+        break;
+      }
+
       try {
-        final user = mutuals.firstWhere((u) => u.uid == targetUid);
+        final user = users[targetUid];
+        if (user == null) {
+          results.add(ChatFailureReason.accountUnavailable);
+          continue;
+        }
+        final isFriend = await provider.checkIfFriend(uid, targetUid);
+        if (FirebaseAuth.instance.currentUser?.uid != uid || !AudienceMessagePolicy.canView(story)) {
+          results.add(FirebaseAuth.instance.currentUser?.uid != uid
+              ? ChatFailureReason.notAuthenticated : ChatFailureReason.permissionDenied);
+          continue;
+        }
         // نستخدم معرف الغرفة الذي أعادته الدالة بعد فحص صلاحيات المراسلة.
-        final roomId = await provider.startChat(
+        final opened = await provider.startChatWithReason(
           viewedUid: targetUid,
           displayFullName: user.name,
           displayProfileImg: user.img,
-          isFriend: true,
+          isFriend: isFriend,
         );
-        if (roomId.isEmpty) continue;
-        if (FirebaseAuth.instance.currentUser?.uid != uid ||
-            !AudienceMessagePolicy.canView(story)) return;
-        final sent = await provider.sendMessage(
+        final roomId = opened.value;
+        if (!opened.isSuccess || roomId == null || roomId.isEmpty) {
+          results.add(opened.failureReason ?? ChatFailureReason.technicalError);
+          continue;
+        }
+        if (FirebaseAuth.instance.currentUser?.uid != uid || !AudienceMessagePolicy.canView(story)) {
+          results.add(FirebaseAuth.instance.currentUser?.uid != uid
+              ? ChatFailureReason.notAuthenticated : ChatFailureReason.permissionDenied);
+          continue;
+        }
+        final sent = await provider.sendMessageWithReason(
           roomId: roomId,
           senderId: uid,
           receiverId: targetUid,
-          type: story['type'] == 'video'? 'video' : 'image',
+          type: story['type'] == 'video' ? 'video' : 'image',
           text: '',
           mediaUrl: story['mediaUrl'],
           extraData: AudienceMessagePolicy.sourceFields(story),
-          isFriend: true,
+          isFriend: isFriend,
         );
-        if (sent) sentCount++;
-      } catch (e) {
-        debugPrint('Error sharing story to $targetUid: $e');
+        results.add(sent.isSuccess && sent.value == true
+            ? null
+            : sent.failureReason ?? ChatFailureReason.technicalError);
+      } catch (error) {
+        debugPrint('Error sharing story to $targetUid: $error');
+        results.add(_shareErrorReason(error));
       }
     }
 
+    // لم نعتبر أي عملية ناجحة إلا إذا أكد ChatProvider حفظ الرسالة فعلياً.
+    assert(results.length == selected.length);
     await Future.delayed(const Duration(milliseconds: 200));
-    if (messenger != null && messenger.mounted) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            sentCount == selected.length
-                ? 'تمت المشاركة مع $sentCount'
-                : sentCount > 0
-                    ? 'تمت المشاركة مع $sentCount من أصل ${selected.length}'
-                    : 'تعذر إرسال القصة. تحقق من إعدادات المراسلة',
-            style: const TextStyle(color: Colors.white),
-          ),
-          backgroundColor: sentCount > 0 ? kTeal : const Color(0xFFE53935),
-        ),
-      );
-    }
+    _showTiniShareOutcome(messenger, results, itemLabel: 'القصة');
   }
 
   @override
