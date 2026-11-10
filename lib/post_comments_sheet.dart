@@ -14,6 +14,7 @@ import 'badge_colors.dart'; // أضفت هذا السطر
 import 'moderation_service.dart';
 import 'block_service.dart';
 import 'mention_privacy_service.dart';
+import 'throne_earned_badge.dart';
 
 class PostCommentsSheet extends StatefulWidget {
   final String? postId;
@@ -815,7 +816,7 @@ for (String tag in postHashtags) {
                         Row(
                           children: [
                             // عرض الشارة جنب الاسم
-                            FutureBuilder<Map<String, dynamic>>(
+                            Flexible(child: FutureBuilder<Map<String, dynamic>>(
                               future: _getUserBadge(commentUid),
                               builder: (context, snapshot) {
                                 final badge = snapshot.data?['badge'];
@@ -823,11 +824,12 @@ for (String tag in postHashtags) {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     _buildUserBadge(badge),
-                                    Text(finalName, style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.bold)),
+                                    Flexible(child: Text(finalName, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.grey[400], fontSize: 13, fontWeight: FontWeight.bold))),
+                                    EarnedThroneBadge(uid: commentUid),
                                   ],
                                 );
                               },
-                            ),
+                            )),
                             const SizedBox(width: 8),
                             Text(timeStr, style: TextStyle(color: Colors.grey[600], fontSize: 10)),
                           ],

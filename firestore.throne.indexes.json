@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "throne_reigns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "completed", "order": "ASCENDING"},
+        {"fieldPath": "crownedAt", "order": "DESCENDING"}
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
