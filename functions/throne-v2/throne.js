@@ -3,6 +3,9 @@ const {onCall, HttpsError} = require("firebase-functions/v2/https");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {getFirestore, Timestamp, FieldValue} = require("firebase-admin/firestore");
 const {randomUUID} = require("node:crypto");
+const {core: {wallet: validateWallet, spendable, enabled: walletEnabled, entry}} = require('./wallet');
+const userRef = (db, uid, unified) => db.doc(`${unified ? 'users' : 'throne_wallets'}/${uid}`);
+const held = (w, unified) => unified ? w?.throneReservedPoints : w?.reservedPoints;
 const DAY = 86400000;
 const options = {region: "europe-west1", enforceAppCheck: true};
 const fail = (code, message) => { throw new HttpsError(code, message); };
@@ -16,13 +19,8 @@ function identifier(value) {
     fail("invalid-argument", "معرّف الطلب غير صالح");
   return value;
 }
-function balance(wallet) {
-  const n = wallet?.availablePoints ?? 0;
-  if (!Number.isSafeInteger(n) || n < 0) fail("failed-precondition", "الرصيد يحتاج إلى مراجعة");
-  return n;
-}
-function auction(id, now) {
-  return {schemaVersion: 3, status: "auction", auctionId: id,
+function auction(id, now, unified = false) {
+  return {schemaVersion: 3, walletVersion: unified ? 2 : 1, status: "auction", auctionId: id,
     auctionStartsAt: Timestamp.fromMillis(now), auctionEndsAt: Timestamp.fromMillis(now + DAY),
     currentBid: 0, leaderUid: null, leaderName: null, leaderAvatar: null,
     kingUid: null, kingName: null, kingAvatar: null, isLocked: false,
@@ -42,7 +40,9 @@ function crown(tx, db, state, entitlement, now, instant) {
   tx.set(db.doc(`throne_entitlements/${state.leaderUid}`), {
     currentCoronationId: id, currentUntil: record.endsAt, coronationCount: count,
     formerKing: entitlement?.formerKing === true});
-  tx.update(db.doc(`throne_wallets/${state.leaderUid}`), {reservedPoints: 0});
+  const unified = state.walletVersion === 2;
+  tx.update(userRef(db, state.leaderUid, unified), unified ? {throneReservedPoints: 0} : {reservedPoints: 0});
+  if (unified) entry(tx, db, state.leaderUid, `${id}_settle`, 'throne_settle', state.currentBid);
   tx.create(db.doc(`throne_ledger/${id}_settle`), {
     uid: state.leaderUid, amount: state.currentBid, type: "settle", auctionId: id,
     timestamp: Timestamp.fromMillis(now)});
@@ -58,27 +58,30 @@ async function advance(db = getFirestore(), clock = Date.now) {
     const ref = db.doc("throne_data/current");
     const snap = await tx.get(ref);
     const state = snap.data();
+    const migration = (await tx.get(db.doc('wallet_config/runtime'))).data();
+    if (migration?.migrationInProgress) return;
     const now = clock();
     if (!state) {
       const config = (await tx.get(db.doc('throne_config/runtime'))).data();
       if (config?.enabled === true && config?.financialSafetyVersion === 3)
-        tx.set(ref, auction(nextId, now));
+        tx.set(ref, auction(nextId, now, state?.walletVersion === 2 || migration?.version === 2));
       return;
     }
     // Older schemas use another point source. Never migrate them or copy balances implicitly.
     if (state.schemaVersion !== 3) return;
     if (state.status === "auction" && millis(state.auctionEndsAt) <= now) {
-      if (!state.leaderUid) { tx.set(ref, auction(nextId, now)); return; }
-      const wallet = await tx.get(db.doc(`throne_wallets/${state.leaderUid}`));
-      if (!wallet.exists || wallet.data().reservedPoints !== state.currentBid)
+      if (!state.leaderUid) { tx.set(ref, auction(nextId, now, state?.walletVersion === 2 || migration?.version === 2)); return; }
+      const wallet = await tx.get(userRef(db, state.leaderUid, state.walletVersion === 2));
+      if (!wallet.exists || held(wallet.data(), state.walletVersion === 2) !== state.currentBid)
         fail("failed-precondition", "حجز غير متطابق؛ يلزم تدخل المشرف");
+      if (state.walletVersion === 2) validateWallet(wallet.data());
       const entitlement = (await tx.get(db.doc(`throne_entitlements/${state.leaderUid}`))).data();
       tx.set(ref, crown(tx, db, state, entitlement, now, false));
     } else if (state.status === "reign" && millis(state.lockEndTime) <= now) {
       tx.set(db.doc(`throne_entitlements/${state.kingUid}`), {
         currentCoronationId: null, currentUntil: null, formerKing: true}, {merge: true});
       tx.update(db.doc(`throne_reigns/${state.coronationId}`), {completed: true});
-      tx.set(ref, auction(nextId, now));
+      tx.set(ref, auction(nextId, now, state?.walletVersion === 2 || migration?.version === 2));
     }
   });
 }
@@ -101,9 +104,11 @@ async function bid(db, uid, data, clock = Date.now) {
     const config = (await tx.get(db.doc('throne_config/runtime'))).data();
     if (config?.enabled !== true || config?.financialSafetyVersion !== 3)
       fail('failed-precondition', 'المزايدات غير مفعلة؛ يلزم تشغيل إصدار نقاط العرش الآمن');
+    await walletEnabled(tx, db);
     const ref = db.doc("throne_data/current");
     const snap = await tx.get(ref);
     const state = snap.data();
+    if (state?.walletVersion !== 2) fail('failed-precondition', 'انتقال المحفظة لم يكتمل');
     if (state?.schemaVersion !== 3 || state.status !== "auction" || state.auctionId !== auctionId)
       fail("failed-precondition", "المزاد غير متاح أو تغير");
     if (millis(state.auctionEndsAt) <= now) fail("deadline-exceeded", "انتهى المزاد");
@@ -112,38 +117,42 @@ async function bid(db, uid, data, clock = Date.now) {
     const userSnap = await tx.get(userRef);
     if (!userSnap.exists) fail("not-found", "الحساب غير موجود");
     const user = userSnap.data();
-    const walletRef = db.doc(`throne_wallets/${uid}`);
+    const walletRef = userRef;
     const walletSnap = await tx.get(walletRef);
     const wallet = walletSnap.data();
-    if (!wallet || wallet.schemaVersion !== 1) fail('failed-precondition', 'نقاط العرش غير مهيأة؛ أعد المزامنة');
+    validateWallet(wallet);
     const same = state.leaderUid === uid;
     const delta = amount - (same ? state.currentBid : 0);
-    const available = balance(wallet);
+    const available = spendable(wallet);
     if (available < delta) fail("resource-exhausted", "نقاطك المتاحة لا تكفي");
     const entitlement = (await tx.get(db.doc(`throne_entitlements/${uid}`))).data();
     let oldRef, oldWallet;
     if (state.leaderUid && !same) {
-      oldRef = db.doc(`throne_wallets/${state.leaderUid}`);
+      oldRef = db.doc(`users/${state.leaderUid}`);
       const old = await tx.get(oldRef);
-      if (!old.exists || old.data().reservedPoints !== state.currentBid)
+      if (!old.exists || old.data().throneReservedPoints !== state.currentBid)
         fail("failed-precondition", "حجز سابق غير متطابق");
       oldWallet = old.data();
     }
-    if ((wallet.reservedPoints ?? 0) !== (same ? state.currentBid : 0))
+    if ((wallet.throneReservedPoints ?? 0) !== (same ? state.currentBid : 0))
       fail("failed-precondition", "حجز المستخدم غير متطابق");
     // Reads may take time. Check the authoritative clock again before scheduling writes.
     now = clock();
     if (millis(state.auctionEndsAt) <= now) fail('deadline-exceeded', 'انتهى المزاد');
     const ledgerId = `${auctionId}_${uid}_${requestId}`;
     if (oldRef) {
-      const refundedBalance = balance(oldWallet) + state.currentBid;
+      const old = validateWallet(oldWallet);
+      const debtPaid = Math.min(old.walletDebt ?? 0, state.currentBid);
+      const refundedBalance = old.tiniBalance + state.currentBid - debtPaid;
       if (!Number.isSafeInteger(refundedBalance)) fail('failed-precondition', 'الرصيد يحتاج إلى مراجعة');
-      tx.update(oldRef, {availablePoints: refundedBalance, reservedPoints: 0});
+      tx.update(oldRef, {tiniBalance: refundedBalance, throneReservedPoints: 0, walletDebt: (old.walletDebt ?? 0) - debtPaid});
+      entry(tx, db, state.leaderUid, `${ledgerId}_refund`, 'throne_refund', state.currentBid, {debtPaid});
       tx.create(db.doc(`throne_ledger/${ledgerId}_refund`), {
         uid: state.leaderUid, amount: state.currentBid, type: "refund", auctionId,
         timestamp: Timestamp.fromMillis(now)});
     }
-    tx.update(walletRef, {availablePoints: available - delta, reservedPoints: amount});
+    tx.update(walletRef, {tiniBalance: available - delta, throneReservedPoints: amount});
+    entry(tx, db, uid, `${ledgerId}_reserve`, 'throne_reserve', delta);
     tx.create(db.doc(`throne_ledger/${ledgerId}_reserve`), {
       uid, amount: delta, type: "reserve", auctionId, timestamp: Timestamp.fromMillis(now)});
     const fullName = typeof user.fullName === 'string' ? user.fullName : '';
@@ -169,17 +178,12 @@ exports.placeThroneBid = onCall(options, async request => {
   return bid(getFirestore(), uid, request.data);
 });
 exports.syncThrone = onCall(options, async request => {
-  const uid = auth(request);
+  auth(request);
   const db = getFirestore();
-  await db.runTransaction(async tx => {
-    const ref = db.doc(`throne_wallets/${uid}`);
-    const wallet = await tx.get(ref);
-    const user = await tx.get(db.doc(`users/${uid}`));
-    if (!wallet.exists && user.exists) tx.create(ref, {schemaVersion: 1, availablePoints: 0, reservedPoints: 0});
-  });
   await advance();
   const config = (await getFirestore().doc('throne_config/runtime').get()).data();
-  return {serverNow: Date.now(), enabled: config?.enabled === true && config?.financialSafetyVersion === 3};
+  const wc = (await db.doc('wallet_config/runtime').get()).data();
+  return {serverNow: Date.now(), enabled: config?.enabled === true && config?.financialSafetyVersion === 3 && wc?.enabled === true && wc?.version === 2 && !wc?.migrationInProgress};
 });
 exports.advanceThrone = onSchedule({region: options.region, schedule: "every 1 minutes", retryCount: 3}, () => advance());
 async function react(db, uid, data, clock = Date.now) {
@@ -189,6 +193,8 @@ async function react(db, uid, data, clock = Date.now) {
   return db.runTransaction(async tx => {
     const ref = db.doc("throne_data/current");
     const state = (await tx.get(ref)).data();
+    const cfg = (await tx.get(db.doc('wallet_config/runtime'))).data();
+    if (cfg?.migrationInProgress) fail('unavailable', 'انتقال المحفظة جار');
     const reactionRef = db.doc(`throne_reigns/${id}/reactions/${uid}`);
     const old = await tx.get(reactionRef);
     if (state?.status !== "reign" || state.coronationId !== id || millis(state.lockEndTime) <= clock())

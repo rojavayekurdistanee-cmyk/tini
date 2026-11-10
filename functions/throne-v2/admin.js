@@ -23,15 +23,15 @@ async function grantPoints(db, uid, amount, operationId) {
       if (previous.data().uid !== uid || previous.data().amount !== amount) throw new Error('Operation ID already used with a different amount');
       return {applied: false, operationId};
     }
-    const ref = db.doc(`throne_wallets/${uid}`);
-    const snapshot = await tx.get(ref);
-    const user = await tx.get(db.doc(`users/${uid}`));
-    if (!user.exists) throw new Error('Create the application profile first');
-    const wallet = snapshot.data() || {schemaVersion: 1, availablePoints: 0, reservedPoints: 0};
-    if (wallet.schemaVersion !== 1 || !Number.isSafeInteger(wallet.availablePoints) || wallet.availablePoints < 0 ||
-      !Number.isSafeInteger(wallet.reservedPoints) || wallet.reservedPoints < 0 || !Number.isSafeInteger(wallet.availablePoints + amount))
-      throw new Error('Invalid throne wallet: no changes applied');
-    tx.set(ref, {...wallet, availablePoints: wallet.availablePoints + amount});
+    const config = (await tx.get(db.doc('wallet_config/runtime'))).data();
+    if (config?.version !== 2 || config?.migrationInProgress || config?.purchasesEnabled)
+      throw new Error('Test grants require a migrated wallet with real purchases disabled');
+    const ref = db.doc(`users/${uid}`);
+    const user = await tx.get(ref);
+    const wallet = require('./wallet').core.wallet(user.data());
+    const balance = require('./wallet').core.whole(wallet.tiniBalance + amount);
+    tx.update(ref, {tiniBalance: balance});
+    require('./wallet').core.entry(tx, db, uid, `grant_${operationId}`, 'test_grant', amount);
     tx.create(receiptRef, {uid, amount, type: 'admin_grant', operationId, timestamp: Timestamp.now()});
     return {applied: true, operationId};
   });
@@ -41,13 +41,15 @@ async function activate(db, clock = Date.now) {
   return db.runTransaction(async tx => {
     const ref = db.doc('throne_data/current');
     const state = (await tx.get(ref)).data();
+    const walletConfig = (await tx.get(db.doc('wallet_config/runtime'))).data();
+    if (walletConfig?.version !== 2 || walletConfig?.migrationInProgress) throw new Error('Complete wallet migration first');
     if (state && state.schemaVersion !== 3) {
       // Only a provably empty v2 auction can be upgraded without moving or refunding money.
       if (!(state.schemaVersion === 2 && state.status === 'auction' && state.currentBid === 0 &&
         !state.leaderUid && !state.kingUid && state.isLocked === false))
         throw new Error('Existing legacy throne state requires review; it was not reset');
     }
-    if (!state || state.schemaVersion !== 3) tx.set(ref, auction(id, clock()));
+    if (!state || state.schemaVersion !== 3) tx.set(ref, auction(id, clock(), true));
     tx.set(db.doc('throne_config/runtime'), {enabled: true, financialSafetyVersion: 3}, {merge: true});
     return {enabled: true, schemaVersion: 3};
   });
@@ -71,9 +73,10 @@ async function main() {
   if (command === 'status') {
     const state = (await db.doc('throne_data/current').get()).data();
     const config = (await db.doc('throne_config/runtime').get()).data();
+    const walletConfig = (await db.doc('wallet_config/runtime').get()).data();
     console.log(JSON.stringify({project, schemaVersion: state?.schemaVersion ?? null,
       state: state?.status ?? null, enabled: config?.enabled === true,
-      financialSafetyVersion: config?.financialSafetyVersion ?? null}));
+      financialSafetyVersion: config?.financialSafetyVersion ?? null, walletVersion: walletConfig?.version ?? null, purchasesEnabled: walletConfig?.purchasesEnabled === true, migrationInProgress: walletConfig?.migrationInProgress === true}));
   } else if (command === 'activate') {
     console.log(JSON.stringify(await activate(db)));
   } else if (command === 'pause') {

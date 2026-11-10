@@ -1,30 +1,21 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' hide Transaction;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:in_app_purchase/in_app_purchase.dart'; // [Tini: إضافة IAP]
-import 'dart:async';
-import 'dart:io'; // [Tini: IAP] - عشان Platform.isIOS
+import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:in_app_purchase_android/in_app_purchase_android.dart';
+import 'package:in_app_purchase_android/billing_client_wrappers.dart';
 
-/*
-  [Tini Project Rules]:
-    1. No line deletion.
-    2. Addition only.
-    3. Consistent naming with Firestore keys.
-    4. Rules Followed: Return full code, professional status management.
-    5. Wallet Module V2: Manages Tini Coins with Google Play + App Store IAP.
-*/
-
-// [Tini: إضافة IAP] - لازم تعرف هذا في main.dart عشان نستخدم الكونتكست
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 class Transaction {
   final String id;
   final int amount;
-  final String type; // 'purchase' | 'spend' | 'reward'
+  final String type;
   final DateTime createdAt;
   final String? packageId;
-
   Transaction({
     required this.id,
     required this.amount,
@@ -32,295 +23,327 @@ class Transaction {
     required this.createdAt,
     this.packageId,
   });
-
-  factory Transaction.fromMap(String id, Map<String, dynamic> data) {
-    return Transaction(
-      id: id,
-      amount: data['amount']?? 0,
-      type: data['type']?? 'purchase',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate()?? DateTime.now(),
-      packageId: data['packageId'],
-    );
-  }
+  factory Transaction.fromMap(String id, Map<String, dynamic> data) =>
+      Transaction(
+        id: id,
+        amount: (data['amount'] as num? ?? 0).toInt(),
+        type: data['type'] as String? ?? 'purchase',
+        createdAt:
+            (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+        packageId: data['packageId'] as String?,
+      );
+  bool get isCredit => [
+    'purchase',
+    'reward',
+    'throne_refund',
+    'box_refund',
+    'box_sale',
+    'test_grant',
+    'migration',
+    'refund_reversed',
+  ].contains(type);
+  bool get isSettlement => ['throne_settle', 'box_settle'].contains(type);
+  String get label =>
+      const {
+        'purchase': 'شراء عملات',
+        'throne_reserve': 'حجز مزايدة العرش',
+        'throne_refund': 'إعادة حجز العرش',
+        'throne_settle': 'تسوية حجز التتويج',
+        'box_reserve': 'حجز صندوق',
+        'box_refund': 'إعادة حجز صندوق',
+        'box_sale': 'بيع صندوق',
+        'box_settle': 'تسوية شراء صندوق',
+        'chargeback': 'استرجاع دفعة',
+        'refund_reversed': 'إلغاء استرجاع دفعة',
+        'test_grant': 'رصيد اختبار',
+        'migration': 'رصيد الانتقال',
+      }[type] ??
+      'عملية محفظة';
 }
 
 class WalletProvider extends ChangeNotifier {
-  bool _isLoading = false;
-  bool get isLoading => _isLoading;
-
-  int _tiniBalance = 0;
-  int get tiniBalance => _tiniBalance;
-
-  List<Transaction> _transactions = [];
-  List<Transaction> get transactions => _transactions;
-
-  StreamSubscription<DocumentSnapshot>? _walletSubscription;
-  StreamSubscription<QuerySnapshot>? _transactionsSubscription;
-
-  final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
-
-  // [Tini: إضافة IAP] - متغيرات الشراء
-  final InAppPurchase _iap = InAppPurchase.instance;
-  StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
+  final _auth = FirebaseAuth.instance;
+  final _store = FirebaseFirestore.instance;
+  final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
+  final _iap = InAppPurchase.instance;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _walletSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _txSub;
+  StreamSubscription<List<PurchaseDetails>>? _purchaseSub;
+  final Map<String, PurchaseDetails> _pending = {};
+  final Set<String> _processing = {};
+  bool _disposed = false,
+      _started = false,
+      _loading = false,
+      _iapAvailable = false;
+  int _generation = 0, _tiniBalance = 0, _reserved = 0, _debt = 0;
+  String? _accountToken;
+  String? error;
+  String purchaseStatus = '';
   List<ProductDetails> _products = [];
-  List<ProductDetails> get products => _products;
-  bool _iapAvailable = false;
+  List<Transaction> _transactions = [];
+  bool get isLoading => _loading;
   bool get iapAvailable => _iapAvailable;
-
-  // [Tini: إضافة IAP] - معرفات المنتجات لازم تكون نفسها في جوجل وآبل
-  static const Set<String> _productIds = {
+  int get tiniBalance => _tiniBalance;
+  int get reservedPoints => _reserved;
+  int get debt => _debt;
+  List<ProductDetails> get products => _products;
+  List<Transaction> get transactions => _transactions;
+  bool get hasPendingPurchases => _pending.isNotEmpty;
+  static const _productIds = {
     'coins_100',
-    'coins_500', 
+    'coins_500',
     'coins_1200',
     'coins_2500',
   };
-
-  // [إضافة Tini]: بدء المزامنة اللحظية للرصيد
-  void startWalletSync() {
-    final User? user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    _walletSubscription?.cancel();
-    _transactionsSubscription?.cancel();
-    _purchaseSubscription?.cancel();
-
-    // [Tini: إضافة IAP] - تهيئة نظام الشراء
-    _initIAP();
-
-    _walletSubscription = FirebaseFirestore.instance
-       .collection('users')
-       .doc(user.uid)
-       .snapshots()
-       .listen((doc) {
-      if (doc.exists) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        _tiniBalance = data['tiniBalance']?? 0;
-        notifyListeners();
-        print("--- [Tini Wallet]: الرصيد الآن متزامن: $_tiniBalance ---");
-      } else {
-        initWallet();
-      }
-    }, onError: (error) {
-      print("--- [Tini Wallet Error]: فشل مزامنة الرصيد: $error ---");
-    });
-
-    _transactionsSubscription?.cancel();
-    _transactionsSubscription = FirebaseFirestore.instance
-       .collection('users')
-       .doc(user.uid)
-       .collection('transactions')
-       .orderBy('createdAt', descending: true)
-       .limit(20)
-       .snapshots()
-       .listen((snapshot) {
-      _transactions = snapshot.docs
-         .map((doc) => Transaction.fromMap(doc.id, doc.data()))
-         .toList();
-      notifyListeners();
-    }, onError: (error) {
-      print("--- [Tini Wallet Error]: فشل جلب العمليات: $error ---");
-      _transactions = [];
-      notifyListeners();
-    });
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
   }
 
-  // [Tini: إضافة IAP] - تهيئة نظام الشراء من جوجل وآبل
-  Future<void> _initIAP() async {
-    _iapAvailable = await _iap.isAvailable();
-    if (!_iapAvailable) {
-      print("--- [Tini Wallet Error]: المتجر غير متاح على هذا الجهاز ---");
-      return;
-    }
-
-    // جلب المنتجات من المتجر
-    await _loadProducts();
-
-    // الاستماع لنتائج الدفع
-    _purchaseSubscription = _iap.purchaseStream.listen(
-      (List<PurchaseDetails> purchaseDetailsList) {
-        _listenToPurchaseUpdated(purchaseDetailsList);
+  void startWalletSync() {
+    if (_started) return;
+    _started = true;
+    // Attach before any store request so purchases cannot be missed.
+    _purchaseSub = _iap.purchaseStream.listen(
+      (purchases) {
+        for (final purchase in purchases) {
+          unawaited(_handle(purchase));
+        }
       },
-      onDone: () {
-        _purchaseSubscription?.cancel();
-      },
-      onError: (error) {
-        print("--- [Tini Wallet Error]: خطأ في stream الشراء: $error ---");
+      onError: (Object _) {
+        error = 'تعذر استقبال نتيجة المتجر؛ أعد المحاولة';
+        notifyListeners();
       },
     );
+    _authSub = _auth.authStateChanges().listen(_bind);
+    unawaited(_loadProducts());
   }
 
-  // [Tini: إضافة IAP] - جلب المنتجات من جوجل بلاي وآب ستور
+  void _bind(User? user) {
+    final generation = ++_generation;
+    _walletSub?.cancel();
+    _txSub?.cancel();
+    _tiniBalance = 0;
+    _reserved = 0;
+    _debt = 0;
+    _accountToken = null;
+    _transactions = [];
+    error = null;
+    purchaseStatus = '';
+    notifyListeners();
+    if (user == null) return;
+    _walletSub = _store
+        .doc('users/${user.uid}')
+        .snapshots()
+        .listen(
+          (doc) {
+            if (generation != _generation) return;
+            final data = doc.data();
+            final ready = data?['walletVersion'] == 2;
+            _tiniBalance = ready
+                ? (data?['tiniBalance'] as num? ?? 0).toInt()
+                : 0;
+            _reserved = ready
+                ? (data?['throneReservedPoints'] as num? ?? 0).toInt() +
+                      (data?['boxReservedPoints'] as num? ?? 0).toInt()
+                : 0;
+            _debt = (data?['walletDebt'] as num? ?? 0).toInt();
+            _accountToken = ready
+                ? (data?['purchaseAccountToken'] as String?)
+                : null;
+            if (doc.exists && !ready && !_loading) {
+              unawaited(initWallet());
+            }
+            notifyListeners();
+          },
+          onError: (Object _) {
+            if (generation == _generation) {
+              error = 'تعذر تحديث المحفظة';
+              notifyListeners();
+            }
+          },
+        );
+    _txSub = _store
+        .collection('users/${user.uid}/transactions')
+        .orderBy('createdAt', descending: true)
+        .limit(30)
+        .snapshots()
+        .listen((snap) {
+          if (generation != _generation) return;
+          _transactions = snap.docs
+              .map((d) => Transaction.fromMap(d.id, d.data()))
+              .toList();
+          notifyListeners();
+        });
+    unawaited(initWallet());
+  }
+
   Future<void> _loadProducts() async {
     try {
-      final ProductDetailsResponse response = await _iap.queryProductDetails(_productIds);
-      if (response.notFoundIDs.isNotEmpty) {
-        print("--- [Tini Wallet Warning]: منتجات غير موجودة: ${response.notFoundIDs} ---");
+      _iapAvailable = await _iap.isAvailable();
+      if (!_iapAvailable) {
+        error = 'المتجر غير متاح على هذا الجهاز';
+        return;
       }
+      final response = await _iap.queryProductDetails(_productIds);
       _products = response.productDetails;
-      notifyListeners();
-      print("--- [Tini Wallet]: تم جلب ${products.length} منتجات من المتجر ---");
-    } catch (e) {
-      print("--- [Tini Wallet Error]: فشل جلب المنتجات: $e ---");
-    }
-  }
-
-  // [Tini: إضافة IAP] - معالجة نتيجة الشراء من جوجل/آبل
-  Future<void> _listenToPurchaseUpdated(List<PurchaseDetails> purchaseDetailsList) async {
-    for (final PurchaseDetails purchaseDetails in purchaseDetailsList) {
-      if (purchaseDetails.status == PurchaseStatus.pending) {
-        print("--- [Tini Wallet]: عملية شراء معلقة... ---");
-      } else {
-        if (purchaseDetails.status == PurchaseStatus.error) {
-          print("--- [Tini Wallet Error]: فشل الشراء: ${purchaseDetails.error} ---");
-        } else if (purchaseDetails.status == PurchaseStatus.purchased ||
-                   purchaseDetails.status == PurchaseStatus.restored) {
-          // [Tini: تعديل IAP] - نحفظ في pending_purchases بدل استدعاء Function
-          await _savePurchaseToFirestore(purchaseDetails);
-        }
-        // إنهاء العملية عشان ما يرجع جوجل الفلوس
-        if (purchaseDetails.pendingCompletePurchase) {
-          await _iap.completePurchase(purchaseDetails);
-        }
+      if (response.error != null || response.notFoundIDs.isNotEmpty) {
+        error = 'بعض باقات المتجر غير متاحة حالياً';
       }
-    }
-  }
-
-  // [Tini: تعديل IAP] - حفظ الفاتورة في Firestore عشان الـ Function تشتغل
-  Future<void> _savePurchaseToFirestore(PurchaseDetails purchaseDetails) async {
-    final User? user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      _setLoading(true);
-      
-      // [Tini: مهم] - هذي البيانات اللي بتروح للـ Function processTiniPurchase
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .collection('pending_purchases')
-          .add({
-        'productId': purchaseDetails.productID,
-        'platform': Platform.isIOS ? 'ios' : 'android',
-        'purchaseToken': purchaseDetails.verificationData.serverVerificationData, // للأندرويد
-        'receiptData': purchaseDetails.verificationData.localVerificationData, // للآيفون
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-      
-      print("--- [Tini Wallet]: تم إرسال الفاتورة للسيرفر للتحقق ---");
-      
-    } catch (e) {
-      print("--- [Tini Wallet Error]: فشل حفظ الفاتورة: $e ---");
+      await _iap.restorePurchases();
+    } catch (_) {
+      error = 'تعذر الاتصال بالمتجر';
     } finally {
-      _setLoading(false);
+      notifyListeners();
     }
   }
 
-  // [إضافة Tini]: إيقاف المزامنة
-  void stopWalletSync() {
-    _walletSubscription?.cancel();
-    _transactionsSubscription?.cancel();
-    _purchaseSubscription?.cancel(); // [Tini: إضافة IAP]
-  }
-
-  // [إضافة Tini]: إنشاء المحفظة أول مرة - عبر Cloud Function
   Future<void> initWallet() async {
-    final User? user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
     try {
-      _setLoading(true);
-      final result = await _functions.httpsCallable('createWallet')
-          .call()
-          .timeout(const Duration(seconds: 10));
-      _tiniBalance = result.data['balance'] ?? 0;
+      _loading = true;
       notifyListeners();
-      print("--- [Tini Wallet]: ${result.data['message']} ---");
-    } on TimeoutException {
-      print("--- [Tini Wallet Error]: انتهت مهلة إنشاء المحفظة ---");
+      final result = await _functions.httpsCallable('createTiniWallet').call({
+        'uid': uid,
+      });
+      if (_auth.currentUser?.uid != uid) return;
+      _accountToken = result.data['accountToken'] as String?;
+      error = null;
+      if (_pending.isNotEmpty) unawaited(retryPendingPurchases());
     } catch (e) {
-      print("--- [Tini Wallet Error]: فشل إنشاء المحفظة: $e ---");
-      // Fallback: إنشاء مباشر لو فشل الـ Function
-      try {
-        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-          'tiniBalance': 0,
-          'walletCreatedAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-        _tiniBalance = 0;
-        notifyListeners();
-        print("--- [Tini Wallet]: تم إنشاء المحفظة محلياً بنجاح ---");
-      } catch (fallbackError) {
-        print("--- [Tini Wallet Error]: فشل الإنشاء المحلي: $fallbackError ---");
+      if (_auth.currentUser?.uid == uid) {
+        error = e is FirebaseFunctionsException
+            ? e.message ?? e.code
+            : 'تعذر تجهيز المحفظة';
       }
     } finally {
-      _setLoading(false);
+      _loading = false;
+      notifyListeners();
     }
   }
 
-  // [إضافة Tini]: جلب الرصيد يدوياً - للاحتياط
-  Future<void> fetchBalance() async {
-    final User? user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    _setLoading(true);
-    try {
-      DocumentSnapshot doc = await FirebaseFirestore.instance
-         .collection('users')
-         .doc(user.uid)
-         .get();
-      if (doc.exists) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        _tiniBalance = data['tiniBalance']?? 0;
-        notifyListeners();
-      } else {
-        await initWallet();
-      }
-    } catch (e) {
-      print("--- [Tini Wallet Error]: فشل جلب الرصيد: $e ---");
-    } finally {
-      _setLoading(false);
-    }
-  }
-
-  // [Tini: تعديل IAP] - شراء العملات عبر جوجل بلاي/آب ستور
-  Future<void> purchaseCoins(String productId) async {
-    if (!_iapAvailable) {
-      print("--- [Tini Wallet Error]: المتجر غير متاح ---");
+  Future<void> _handle(PurchaseDetails purchase) async {
+    final key =
+        '${purchase.productID}:${purchase.purchaseID}:${purchase.verificationData.serverVerificationData}';
+    if (purchase.status == PurchaseStatus.pending) {
+      purchaseStatus = 'بانتظار إتمام الدفع في المتجر';
+      notifyListeners();
       return;
     }
-
+    if (purchase.status == PurchaseStatus.error ||
+        purchase.status == PurchaseStatus.canceled) {
+      purchaseStatus = purchase.status == PurchaseStatus.canceled
+          ? 'ألغي الشراء'
+          : 'تعذر إتمام الشراء';
+      notifyListeners();
+      return;
+    }
+    _pending[key] = purchase;
+    if (_processing.contains(key)) return;
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      error = 'سجل الدخول إلى حساب الشراء لإكمال تسليمه';
+      notifyListeners();
+      return;
+    }
+    _processing.add(key);
     try {
-      final ProductDetails productDetails = _products.firstWhere(
-        (product) => product.id == productId,
-        orElse: () => throw Exception('المنتج غير موجود'),
-      );
-
-      final PurchaseParam purchaseParam = PurchaseParam(productDetails: productDetails);
-      
-      // هذا يفتح شاشة الدفع الرسمية تبع جوجل/آبل
-      await _iap.buyConsumable(purchaseParam: purchaseParam);
-      
+      purchaseStatus = 'جاري التحقق من الشراء وتسليم العملات';
+      notifyListeners();
+      final result = await _functions.httpsCallable('verifyTiniPurchase').call({
+        'uid': uid,
+        'platform': Platform.isIOS ? 'ios' : 'android',
+        'productId': purchase.productID,
+        'proof': purchase.verificationData.serverVerificationData,
+      });
+      if (result.data['delivered'] != true) throw StateError('Not delivered');
+      // Consume/finish only after the server confirms durable delivery.
+      if (Platform.isAndroid) {
+        final addition = _iap
+            .getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
+        final consumed = await addition.consumePurchase(purchase);
+        if (consumed.responseCode != BillingResponse.ok &&
+            consumed.responseCode != BillingResponse.itemNotOwned) {
+          throw StateError('Store finalization pending');
+        }
+      }
+      if (purchase.pendingCompletePurchase) {
+        await _iap.completePurchase(purchase);
+      }
+      _pending.remove(key);
+      if (_auth.currentUser?.uid == uid) {
+        purchaseStatus = 'تم تسليم العملات إلى المحفظة';
+        error = null;
+      }
     } catch (e) {
-      print("--- [Tini Wallet Error]: فشل بدء عملية الشراء: $e ---");
+      if (_auth.currentUser?.uid == uid) {
+        error = e is FirebaseFunctionsException
+            ? e.message ?? e.code
+            : 'التسليم أو تأكيد المتجر معلق؛ اضغط إعادة المحاولة';
+        purchaseStatus = 'الشراء بانتظار التأكيد';
+      }
+    } finally {
+      _processing.remove(key);
+      notifyListeners();
     }
   }
 
-  // [Tini: إضافة IAP] - استعادة المشتريات - مطلوب من آبل
+  Future<void> retryPendingPurchases() async {
+    for (final purchase in List<PurchaseDetails>.of(_pending.values)) {
+      await _handle(purchase);
+    }
+    await restorePurchases();
+  }
+
+  Future<void> purchaseCoins(String productId) async {
+    if (!_iapAvailable || _accountToken == null || _auth.currentUser == null) {
+      error = 'المحفظة أو المتجر غير جاهز';
+      notifyListeners();
+      return;
+    }
+    try {
+      final product = _products.firstWhere((p) => p.id == productId);
+      final started = await _iap.buyConsumable(
+        autoConsume: false,
+        purchaseParam: PurchaseParam(
+          productDetails: product,
+          applicationUserName: _accountToken,
+        ),
+      );
+      if (!started) throw StateError('Store did not start');
+    } catch (_) {
+      error = 'تعذر بدء الشراء';
+      notifyListeners();
+    }
+  }
+
   Future<void> restorePurchases() async {
     try {
-      await _iap.restorePurchases();
-      print("--- [Tini Wallet]: تم طلب استعادة المشتريات ---");
-    } catch (e) {
-      print("--- [Tini Wallet Error]: فشل استعادة المشتريات: $e ---");
+      await _iap.restorePurchases(applicationUserName: _accountToken);
+    } catch (_) {
+      error = 'تعذر البحث عن المشتريات المعلقة';
+      notifyListeners();
     }
   }
 
-  void _setLoading(bool value) {
-    _isLoading = value;
-    notifyListeners();
+  Future<void> fetchBalance() async {
+    await initWallet();
+  }
+
+  void stopWalletSync() {
+    _generation++;
+    _started = false;
+    _authSub?.cancel();
+    _walletSub?.cancel();
+    _txSub?.cancel();
+    _purchaseSub?.cancel();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     stopWalletSync();
     super.dispose();
   }

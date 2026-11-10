@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'wallet_provider.dart';
 
 /*
@@ -39,8 +40,10 @@ class _WalletScreenState extends State<WalletScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await initializeDateFormatting('ar');
+      if (!mounted) return;
+
       final wallet = Provider.of<WalletProvider>(context, listen: false);
-      await wallet.initWallet(); // استدعاء createWallet - ينشئ المحفظة لو مش موجودة
       wallet.startWalletSync(); // يبدأ الـ sync بعدها
       if (mounted) {
         setState(() {
@@ -65,28 +68,45 @@ class _WalletScreenState extends State<WalletScreen> {
         elevation: 0,
         centerTitle: true,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: Colors.white,
+            size: 20,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
           "محفظة Tini",
-          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        // [Tini: إضافة IAP] - زر استعادة المشتريات مطلوب من آبل
+        // [Tini: إضافة IAP] - زر متابعة المشتريات المعلقة مطلوب من آبل
         actions: [
           Consumer<WalletProvider>(
             builder: (context, wallet, child) {
               return IconButton(
-                icon: const Icon(Iconsax.refresh, color: Colors.white70, size: 22),
-                tooltip: 'استعادة المشتريات',
+                icon: const Icon(
+                  Iconsax.refresh,
+                  color: Colors.white70,
+                  size: 22,
+                ),
+                tooltip: 'متابعة المشتريات المعلقة',
                 onPressed: () {
                   wallet.restorePurchases();
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: const Text("جاري البحث عن مشترياتك السابقة...", textAlign: TextAlign.center),
+                      content: const Text(
+                        "جاري البحث عن مشتريات لم يكتمل تأكيدها...",
+                        textAlign: TextAlign.center,
+                      ),
                       backgroundColor: tiniTeal,
                       behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                   );
                 },
@@ -117,23 +137,30 @@ class _WalletScreenState extends State<WalletScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
             children: [
               _buildBalanceCard(wallet),
+              if (wallet.error != null)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    wallet.error!,
+                    style: const TextStyle(color: Colors.amber),
+                  ),
+                ),
+              if (wallet.purchaseStatus.isNotEmpty)
+                Text(
+                  wallet.purchaseStatus,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white70),
+                ),
+              if (wallet.hasPendingPurchases)
+                TextButton(
+                  onPressed: wallet.retryPendingPurchases,
+                  child: const Text('إعادة محاولة تأكيد الشراء'),
+                ),
               const SizedBox(height: 25),
               _buildSectionTitle("شراء عملات Tini"),
               const SizedBox(height: 15),
               // [Tini: تعديل IAP] - عرض حالة تحميل المنتجات
-              wallet.iapAvailable && wallet.products.isEmpty
-               ? Container(
-                      padding: const EdgeInsets.all(30),
-                      decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(15)),
-                      child: Column(
-                        children: [
-                          CircularProgressIndicator(color: tiniTeal, strokeWidth: 2),
-                          const SizedBox(height: 10),
-                          const Text("جاري جلب أسعار المتجر...", style: TextStyle(color: Colors.white38, fontSize: 14)),
-                        ],
-                      ),
-                    )
-                  : _buildPackagesGrid(wallet),
+              _buildPackagesGrid(wallet),
               const SizedBox(height: 25),
               _buildSectionTitle("آخر العمليات"),
               const SizedBox(height: 15),
@@ -154,7 +181,7 @@ class _WalletScreenState extends State<WalletScreen> {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: tiniTeal.withValues(alpha:0.1),
+            color: tiniTeal.withValues(alpha: 0.1),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -168,20 +195,23 @@ class _WalletScreenState extends State<WalletScreen> {
               Icon(Iconsax.wallet_3, color: Colors.amber, size: 28),
               const SizedBox(width: 10),
               const Text(
-                "رصيدك الحالي",
+                "رصيدك المتاح",
                 style: TextStyle(color: Colors.white70, fontSize: 16),
               ),
             ],
           ),
           const SizedBox(height: 15),
           wallet.isLoading
-           ? const SizedBox(
+              ? const SizedBox(
                   width: 30,
                   height: 30,
-                  child: CircularProgressIndicator(color: Colors.teal, strokeWidth: 3),
+                  child: CircularProgressIndicator(
+                    color: Colors.teal,
+                    strokeWidth: 3,
+                  ),
                 )
               : Text(
-                  "${NumberFormat('#,###').format(wallet.tiniBalance)}",
+                  NumberFormat('#,###').format(wallet.tiniBalance),
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 42,
@@ -190,8 +220,21 @@ class _WalletScreenState extends State<WalletScreen> {
                 ),
           const SizedBox(height: 5),
           Text(
+            'المحجوز: ${NumberFormat('#,###').format(wallet.reservedPoints)}',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          if (wallet.debt > 0)
+            Text(
+              'تسوية معلقة: ${wallet.debt}',
+              style: const TextStyle(color: Colors.amber),
+            ),
+          Text(
             "عملة Tini",
-            style: TextStyle(color: tiniTeal, fontSize: 16, fontWeight: FontWeight.w500),
+            style: TextStyle(
+              color: tiniTeal,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ],
       ),
@@ -201,9 +244,23 @@ class _WalletScreenState extends State<WalletScreen> {
   Widget _buildSectionTitle(String title) {
     return Row(
       children: [
-        Container(width: 4, height: 20, decoration: BoxDecoration(color: tiniTeal, borderRadius: BorderRadius.circular(10))),
+        Container(
+          width: 4,
+          height: 20,
+          decoration: BoxDecoration(
+            color: tiniTeal,
+            borderRadius: BorderRadius.circular(10),
+          ),
+        ),
         const SizedBox(width: 10),
-        Text(title, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
+        Text(
+          title,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ],
     );
   }
@@ -224,17 +281,24 @@ class _WalletScreenState extends State<WalletScreen> {
         final int totalAmount = package['amount'] + package['bonus'];
 
         // [Tini: إضافة IAP] - جلب السعر الحقيقي من جوجل/آبل
-        final productDetails = wallet.products.where((p) => p.id == package['id']).firstOrNull;
+        final productDetails = wallet.products
+            .where((p) => p.id == package['id'])
+            .firstOrNull;
 
-        final String displayPrice = productDetails!= null? productDetails.price : "\$${package['price']}";
+        final String displayPrice = productDetails?.price ?? 'غير متاح حالياً';
 
         return GestureDetector(
-          onTap: () => _handlePurchase(wallet, package),
+          onTap: productDetails == null || wallet.isLoading
+              ? null
+              : () => _handlePurchase(wallet, package),
           child: Container(
             decoration: BoxDecoration(
               color: surfaceColor,
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: tiniTeal.withValues(alpha:0.3), width: 1),
+              border: Border.all(
+                color: tiniTeal.withValues(alpha: 0.3),
+                width: 1,
+              ),
             ),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -243,33 +307,54 @@ class _WalletScreenState extends State<WalletScreen> {
                 const SizedBox(height: 10),
                 Text(
                   NumberFormat('#,###').format(totalAmount),
-                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-                Text("عملة", style: TextStyle(color: Colors.white70, fontSize: 12)),
-                if (package['bonus'] > 0)...[
+                Text(
+                  "عملة",
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                if (package['bonus'] > 0) ...[
                   const SizedBox(height: 5),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
-                      color: tiniTeal.withValues(alpha:0.2),
+                      color: tiniTeal.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       "+${package['bonus']} هدية",
-                      style: TextStyle(color: tiniTeal, fontSize: 11, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        color: tiniTeal,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ],
                 const SizedBox(height: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 15,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: tiniTeal,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     displayPrice, // [Tini: تعديل IAP] - عرض السعر من المتجر
-                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ],
@@ -284,50 +369,80 @@ class _WalletScreenState extends State<WalletScreen> {
     if (wallet.transactions.isEmpty) {
       return Container(
         padding: const EdgeInsets.all(30),
-        decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(15)),
+        decoration: BoxDecoration(
+          color: surfaceColor,
+          borderRadius: BorderRadius.circular(15),
+        ),
         child: Column(
           children: [
             Icon(Iconsax.receipt_1, color: Colors.white24, size: 50),
             const SizedBox(height: 10),
-            const Text("لا توجد عمليات بعد", style: TextStyle(color: Colors.white38, fontSize: 14)),
+            const Text(
+              "لا توجد عمليات بعد",
+              style: TextStyle(color: Colors.white38, fontSize: 14),
+            ),
           ],
         ),
       );
     }
 
     return Container(
-      decoration: BoxDecoration(color: surfaceColor, borderRadius: BorderRadius.circular(15)),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(15),
+      ),
       child: ListView.separated(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         itemCount: wallet.transactions.length,
-        separatorBuilder: (context, index) => Divider(color: Colors.white.withValues(alpha:0.05), height: 1, indent: 15, endIndent: 15),
+        separatorBuilder: (context, index) => Divider(
+          color: Colors.white.withValues(alpha: 0.05),
+          height: 1,
+          indent: 15,
+          endIndent: 15,
+        ),
         itemBuilder: (context, index) {
           final tx = wallet.transactions[index];
-          final bool isPurchase = tx.type == 'purchase';
-          final String dateStr = DateFormat('yyyy/MM/dd - hh:mm a', 'ar').format(tx.createdAt);
+          final bool isPurchase = tx.isCredit;
+          final String dateStr = DateFormat(
+            'yyyy/MM/dd - hh:mm a',
+            'ar',
+          ).format(tx.createdAt);
           return ListTile(
             leading: Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: isPurchase? tiniTeal.withValues(alpha:0.15) : Colors.redAccent.withValues(alpha:0.15),
+                color: isPurchase
+                    ? tiniTeal.withValues(alpha: 0.15)
+                    : Colors.redAccent.withValues(alpha: 0.15),
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                isPurchase? Iconsax.arrow_down_2 : Iconsax.arrow_up_1,
-                color: isPurchase? tiniTeal : Colors.redAccent,
+                isPurchase ? Iconsax.arrow_down_2 : Iconsax.arrow_up_1,
+                color: isPurchase ? tiniTeal : Colors.redAccent,
                 size: 20,
               ),
             ),
             title: Text(
-              isPurchase? "شراء عملات" : "صرف عملات",
-              style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+              tx.label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
             ),
-            subtitle: Text(dateStr, style: TextStyle(color: Colors.white38, fontSize: 11)),
+            subtitle: Text(
+              dateStr,
+              style: TextStyle(color: Colors.white38, fontSize: 11),
+            ),
             trailing: Text(
-              "${isPurchase? '+' : '-'}${NumberFormat('#,###').format(tx.amount)}",
+              "${tx.isSettlement
+                  ? ''
+                  : isPurchase
+                  ? '+'
+                  : '-'}${NumberFormat('#,###').format(tx.amount)}",
               style: TextStyle(
-                color: isPurchase? tiniTeal : Colors.redAccent,
+                color: isPurchase ? tiniTeal : Colors.redAccent,
                 fontSize: 15,
                 fontWeight: FontWeight.bold,
               ),
@@ -338,15 +453,23 @@ class _WalletScreenState extends State<WalletScreen> {
     );
   }
 
-  void _handlePurchase(WalletProvider wallet, Map<String, dynamic> package) async {
+  void _handlePurchase(
+    WalletProvider wallet,
+    Map<String, dynamic> package,
+  ) async {
     // [Tini: تعديل IAP] - التأكد إن المتجر جاهز
     if (!wallet.iapAvailable) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text("المتجر غير متاح على هذا الجهاز حالياً", textAlign: TextAlign.center),
+          content: const Text(
+            "المتجر غير متاح على هذا الجهاز حالياً",
+            textAlign: TextAlign.center,
+          ),
           backgroundColor: Colors.redAccent,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       );
       return;
@@ -375,7 +498,7 @@ class _WalletScreenState extends State<WalletScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              "سيتم الدفع عبر ${Theme.of(context).platform == TargetPlatform.iOS? 'App Store' : 'Google Play'}",
+              "سيتم الدفع عبر ${Theme.of(context).platform == TargetPlatform.iOS ? 'App Store' : 'Google Play'}",
               style: TextStyle(color: Colors.white54, fontSize: 12),
               textAlign: TextAlign.center,
             ),
@@ -389,7 +512,9 @@ class _WalletScreenState extends State<WalletScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: tiniTeal,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
             onPressed: () => Navigator.pop(context, true),
             child: Text("متابعة للدفع", style: TextStyle(color: Colors.white)),
@@ -398,7 +523,7 @@ class _WalletScreenState extends State<WalletScreen> {
       ),
     );
 
-    if (confirm!= true) return;
+    if (confirm != true) return;
 
     // [Tini: تعديل IAP] - استدعاء الشراء من Provider
     // هذا السطر يفتح شاشة الدفع الرسمية تبع جوجل/آبل
