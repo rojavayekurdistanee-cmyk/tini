@@ -215,6 +215,9 @@ class _ThroneSocialState extends State<ThroneSocial> {
             style: const TextStyle(color: Colors.white70),
           ),
         ExpansionTile(
+          key: const PageStorageKey<String>(
+            'tini_throne_competitors_expansion',
+          ),
           title: const Text('أقوى ثلاثة منافسين'),
           children: [
             if (_competitors == null)
@@ -269,6 +272,7 @@ class _ThroneSocialState extends State<ThroneSocial> {
             },
           ),
         ExpansionTile(
+          key: const PageStorageKey<String>('tini_throne_history_expansion'),
           title: const Text('قاعة الملوك السابقين'),
           onExpansionChanged: (open) {
             if (open && _history.isEmpty) unawaited(_loadHistory());
