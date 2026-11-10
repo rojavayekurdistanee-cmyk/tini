@@ -32,6 +32,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription? _throneSub;
   StreamSubscription? _authSub;
   StreamSubscription? _userSub;
+  StreamSubscription? _pointsSub;
   final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
   String? auctionId;
   String? leaderUid;
@@ -138,6 +139,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
     _throneSub?.cancel();
     _authSub?.cancel();
     _userSub?.cancel();
+    _pointsSub?.cancel();
 
     // 1. مراقبة بيانات العرش لحظياً
     _throneSub = _firestore
@@ -173,7 +175,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
               _isThroneLocked = data['isLocked'] ?? false;
               _lockEndTime = data['lockEndTime'];
 
-              _ready = data['schemaVersion'] == 2;
+              _ready = data['schemaVersion'] == 3;
               auctionId = data['auctionId'];
               leaderUid = data['leaderUid'];
               leaderName = data['leaderName'];
@@ -192,6 +194,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
     // 2. مراقبة نقاط المستخدم الحالي
     _authSub = _auth.authStateChanges().listen((user) {
       _userSub?.cancel();
+      _pointsSub?.cancel();
       _myPoints = 0;
       _reserved = 0;
       _myCrownNumber = '';
@@ -203,6 +206,26 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (user != null) {
         unawaited(_loadPending(user.uid));
         unawaited(sync());
+        _pointsSub = _firestore
+            .collection('throne_wallets')
+            .doc(user.uid)
+            .snapshots()
+            .listen(
+              (doc) {
+                if (_auth.currentUser?.uid != user.uid) return;
+                final data = doc.data();
+                _myPoints = (data?['availablePoints'] as num? ?? 0).toInt();
+                _reserved = (data?['reservedPoints'] as num? ?? 0).toInt();
+                notifyListeners();
+              },
+              onError: (Object error) {
+                if (_auth.currentUser?.uid != user.uid) return;
+                _myPoints = 0;
+                _reserved = 0;
+                lastError = 'تعذر تحديث نقاط العرش؛ أعد المحاولة';
+                notifyListeners();
+              },
+            );
         _userSub = _firestore
             .collection('users')
             .doc(user.uid)
@@ -211,8 +234,6 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
               if (doc.exists) {
                 final data = doc.data()!;
                 if (_auth.currentUser?.uid != user.uid) return;
-                _myPoints = (data['titiBalance'] as num? ?? 0).toInt();
-                _reserved = (data['throneReservedPoints'] as num? ?? 0).toInt();
                 _myCrownNumber =
                     data['crownNumber'] ?? _generateCrownNumber(user.uid);
                 notifyListeners();
@@ -329,6 +350,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
     _throneSub?.cancel();
     _authSub?.cancel();
     _userSub?.cancel();
+    _pointsSub?.cancel();
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();

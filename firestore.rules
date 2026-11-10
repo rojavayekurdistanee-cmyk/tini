@@ -45,7 +45,9 @@ allow update: if request.auth != null && request.auth.uid == userId
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
       allow delete: if request.auth!= null && request.auth.uid == userId
-        && resource.data.get('throneReservedPoints', 0) == 0;
+        && resource.data.get('throneReservedPoints', 0) == 0
+        && (!exists(/databases/$(database)/documents/throne_wallets/$(userId))
+          || get(/databases/$(database)/documents/throne_wallets/$(userId)).data.get('reservedPoints', 0) == 0);
 
       // السماح بالوصول لمجموعة الإعجابات داخل ملف المستخدم
       match /likedPosts/{postId} {
@@ -582,6 +584,11 @@ allow delete: if request.auth != null && resource.data.toUid == request.auth.uid
       allow write: if false;
     }
 
+    // Server-only throne points: editing legacy profile balances grants no throne points.
+    match /throne_wallets/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
     // Throne v2: only Admin SDK transactions may write financial or entitlement data.
     match /throne_auctions/{auctionId}/competitors/{uid} {
       allow read: if request.auth != null;
