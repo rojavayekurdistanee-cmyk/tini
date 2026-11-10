@@ -207,15 +207,18 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(_loadPending(user.uid));
         unawaited(sync());
         _pointsSub = _firestore
-            .collection('throne_wallets')
+            .collection('users')
             .doc(user.uid)
             .snapshots()
             .listen(
               (doc) {
                 if (_auth.currentUser?.uid != user.uid) return;
                 final data = doc.data();
-                _myPoints = (data?['availablePoints'] as num? ?? 0).toInt();
-                _reserved = (data?['reservedPoints'] as num? ?? 0).toInt();
+                _myPoints = data?['walletVersion'] == 2
+                    ? (data?['tiniBalance'] as num? ?? 0).toInt()
+                    : 0;
+                _reserved = (data?['throneReservedPoints'] as num? ?? 0)
+                    .toInt();
                 notifyListeners();
               },
               onError: (Object error) {

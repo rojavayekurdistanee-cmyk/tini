@@ -50,3 +50,7 @@ skills-lock.json
 .env
 # Widget Preview related
 .widget_preview/
+
+# Local server configuration and private migration inventories
+functions/**/.env*
+wallet-migration*.json

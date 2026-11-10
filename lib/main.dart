@@ -133,7 +133,8 @@ void main() async {
           create: (_) => StoryProvider(), // تم الإضافة: تسجيل مزود الستوري
         ),
         ChangeNotifierProvider(
-          create: (_) => WalletProvider(), // تم الإضافة: تسجيل مزود المحفظة
+          lazy: false,
+          create: (_) => WalletProvider()..startWalletSync(), // الاستماع للدفع من بداية تشغيل التطبيق
         ),
         ChangeNotifierProvider(
           create: (_) => BoxProvider(),

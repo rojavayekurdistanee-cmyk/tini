@@ -245,140 +245,13 @@ exports.requestUserDataExport = onCall({
  * يتم تشغيلها تلقائياً عند إنشاء طلب شراء جديد في pending_purchases
  * [تم الإصلاح]: إضافة التحقق الحقيقي مع Google Play و Apple
  */
-exports.processTiniPurchase = onDocumentCreated({
-    region: "europe-west1",
+// Retired financial endpoints. Never credit pending_purchases from older clients.
+// The sole active purchase processor is throne-v2.verifyTiniPurchase.
+exports.processTiniPurchase = onDocumentCreated({region: "europe-west1",
     document: "users/{userId}/pending_purchases/{purchaseId}"
-}, async (event) => {
-    const snap = event.data;
-    if (!snap) return null;
-
-    const purchaseData = snap.data();
-    const userId = event.params.userId;
-    const purchaseId = event.params.purchaseId;
-
-    console.log(`[Tini Wallet] Processing purchase: ${purchaseId} for user: ${userId}`);
-
-    const userRef = db.collection('users').doc(userId);
-    const purchaseRef = userRef.collection('pending_purchases').doc(purchaseId);
-    const transactionRef = userRef.collection('transactions').doc();
-
-    try {
-        // 1. [أمان] التحقق الحقيقي من الفاتورة مع جوجل/آبل
-        const { platform, productId, purchaseToken, receiptData } = purchaseData;
-
-        if (!COIN_PRODUCTS[productId]) {
-            throw new Error("Product ID غير معروف أو غير مدعوم");
-        }
-
-        let isPaymentValid = false;
-
-        if (platform === "android") {
-            if (!purchaseToken) throw new Error("purchaseToken مفقود للأندرويد");
-            isPaymentValid = await verifyGooglePlayPurchase(productId, purchaseToken);
-        } else if (platform === "ios") {
-            if (!receiptData) throw new Error("receiptData مفقود للآيفون");
-            isPaymentValid = await verifyApplePurchase(receiptData);
-        } else {
-            throw new Error("منصة غير مدعومة: " + platform);
-        }
-
-        if (!isPaymentValid) {
-            await purchaseRef.update({
-                status: 'failed',
-                error: 'Payment verification failed - الفاتورة مزورة أو مستخدمة',
-                processedAt: FieldValue.serverTimestamp()
-            });
-            console.log(`[Tini Wallet] Payment verification failed for: ${purchaseId}`);
-            return null;
-        }
-
-        const amountToAdd = COIN_PRODUCTS[productId]; // ناخذ القيمة من السيرفر فقط
-
-        // 2. [أمان]: استخدام Transaction لضمان عدم التكرار
-        await db.runTransaction(async (transaction) => {
-            const userDoc = await transaction.get(userRef);
-            const currentBalance = userDoc.exists? (userDoc.data().tiniBalance || 0) : 0;
-            const newBalance = currentBalance + amountToAdd;
-
-            // تحديث الرصيد
-            transaction.update(userRef, {
-                tiniBalance: newBalance,
-                walletUpdatedAt: FieldValue.serverTimestamp()
-            });
-
-            // إضافة سجل العملية
-            transaction.set(transactionRef, {
-                amount: amountToAdd,
-                type: 'purchase',
-                packageId: productId,
-                purchaseId: purchaseId,
-                platform: platform,
-                createdAt: FieldValue.serverTimestamp(),
-                balanceAfter: newBalance
-            });
-
-            // تحديث حالة الطلب
-            transaction.update(purchaseRef, {
-                status: 'completed',
-                processedAt: FieldValue.serverTimestamp(),
-                balanceAfter: newBalance
-            });
-        });
-
-        console.log(`[Tini Wallet] Success: Added ${amountToAdd} coins to ${userId}`);
-        return { success: true };
-
-    } catch (error) {
-        console.error('[Tini Wallet] Error:', error);
-        await purchaseRef.update({
-            status: 'error',
-            error: error.message,
-            processedAt: FieldValue.serverTimestamp()
-        });
-        return null;
-    }
-});
-
-/**
- * 5. [Tini Wallet] - إنشاء محفظة للمستخدم الجديد
- */
-exports.createWallet = onCall({
-    region: "europe-west1"
-}, async (request) => {
-    if (!request.auth) {
-        throw new Error('يجب تسجيل الدخول أولاً');
-    }
-
-    const uid = request.auth.uid;
-    const userRef = db.collection('users').doc(uid);
-
-    try {
-        const userDoc = await userRef.get();
-
-        if (userDoc.exists && userDoc.data().tiniBalance!== undefined) {
-            return {
-                success: true,
-                message: 'المحفظة موجودة بالفعل',
-                balance: userDoc.data().tiniBalance
-            };
-        }
-
-        await userRef.set({
-            tiniBalance: 0,
-            walletCreatedAt: FieldValue.serverTimestamp()
-        }, { merge: true });
-
-        console.log(`[Tini Wallet] Wallet created for: ${uid}`);
-        return {
-            success: true,
-            message: 'تم إنشاء المحفظة بنجاح',
-            balance: 0
-        };
-
-    } catch (error) {
-        console.error('[Tini Wallet] Create Error:', error);
-        throw new Error('حدث خطأ أثناء إنشاء المحفظة');
-    }
+}, async () => null);
+exports.createWallet = onCall({region: "europe-west1"}, async () => {
+    throw new Error('Upgrade required: use createTiniWallet');
 });
 
 const nodemailer = require("nodemailer");
@@ -387,7 +260,7 @@ const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: {
         user: "arasb5175@gmail.com",
-        pass: "mjcc ssga mvmt gnbw"
+        pass: process.env.TINI_MAIL_APP_PASSWORD
     }
 });
 
@@ -1286,64 +1159,13 @@ exports.logInteraction = onCall({ region: "europe-west1" }, async (request) => {
     return { success: true };
 });
 
-/**
- * [Tini: IAP Helper] التحقق من فاتورة Google Play
- * TEMP: معطل مؤقتاً - التطبيق لسه مش على Play Store
- * قبل النشر: شيل الـ return true وفعل الكود المعلق + ارفع service-account.json
- */
-async function verifyGooglePlayPurchase(productId, purchaseToken) {
-  console.log("TEMP: Google Play verification DISABLED - returning true");
-  return true; // هسا أي فاتورة رح تتقبل. احذف هذا السطر قبل النشر!
-
-  /*
-  // الكود الحقيقي - فعّله قبل نشر التطبيق
-  const auth = new google.auth.GoogleAuth({
-    keyFile: "service-account.json",
-    scopes: ["https://www.googleapis.com/auth/androidpublisher"],
-  });
-
-  const androidpublisher = google.androidpublisher({version: "v3", auth});
-
-  try {
-    const res = await androidpublisher.purchases.products.get({
-      packageName: ANDROID_PACKAGE_NAME,
-      productId: productId,
-      token: purchaseToken,
-    });
-    return res.data.purchaseState === 0;
-  } catch (e) {
-    console.error("Google Play Verify Error:", e.message);
-    return false;
-  }
-  */
+// Legacy receipt helpers are deliberately closed. Real store verification lives
+// in functions/throne-v2/purchase_verifier.js; do not re-enable a second credit path.
+async function verifyGooglePlayPurchase() {
+  throw new Error('Legacy verifier retired; use verifyTiniPurchase');
 }
-
-/**
- * [Tini: IAP Helper] التحقق من فاتورة Apple App Store
- * TEMP: معطل مؤقتاً - التطبيق لسه مش على App Store
- * قبل النشر: شيل الـ return true وفعل الكود المعلق + حط APPLE_SHARED_SECRET
- */
-async function verifyApplePurchase(receiptData) {
-  console.log("TEMP: Apple verification DISABLED - returning true");
-  return true; // هسا أي فاتورة رح تتقبل. احذف هذا السطر قبل النشر!
-
-  /*
-  // الكود الحقيقي - فعّله قبل نشر التطبيق
-  const verifyUrl = "https://buy.itunes.apple.com/verifyReceipt"; // للإنتاج
-  // const verifyUrl = "https://sandbox.itunes.apple.com/verifyReceipt"; // للتجربة
-
-  try {
-    const res = await axios.post(verifyUrl, {
-      "receipt-data": receiptData,
-      "password": APPLE_SHARED_SECRET,
-      "exclude-old-transactions": true,
-    });
-    return res.data.status === 0;
-  } catch (e) {
-    console.error("Apple Verify Error:", e.message);
-    return false;
-  }
-  */
+async function verifyApplePurchase() {
+  throw new Error('Legacy verifier retired; use verifyTiniPurchase');
 }
 /**
  * [Tini: Full Purge] - حذف شامل من كل مكان
