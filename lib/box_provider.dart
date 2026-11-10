@@ -82,7 +82,7 @@ class BoxProvider extends ChangeNotifier {
         final uid = user.uid;
         _userPointsSub = _firestore.collection('users').doc(uid).snapshots().listen((doc) {
           if (doc.exists && !_isDisposed && _auth.currentUser?.uid == uid) {
-            _userPoints = doc.data()?['titiBalance'] ?? 0;
+            _userPoints = doc.data()?['tiniBalance'] ?? 0;
             notifyListeners();
           }
         });
@@ -166,7 +166,7 @@ class BoxProvider extends ChangeNotifier {
   }
 
   String _generateSecureHash(String boxId, String uid, int timestamp) {
-    final key = utf8.encode('TITI_BOX_$boxId$uid$timestamp');
+    final key = utf8.encode('TINI_BOX_$boxId$uid$timestamp');
     final bytes = utf8.encode('$boxId-$uid-$timestamp');
     final hmacSha256 = Hmac(sha256, key);
     final digest = hmacSha256.convert(bytes);
@@ -205,7 +205,7 @@ class BoxProvider extends ChangeNotifier {
 
         if (!isAdmin) {
           transaction.update(userDoc.reference, {
-            'titiBalance': FieldValue.increment(-box.price),
+            'tiniBalance': FieldValue.increment(-box.price),
           });
         }
 
@@ -259,7 +259,7 @@ class BoxProvider extends ChangeNotifier {
       // نقاط البائع - set merge عشان ما يفشل
       try {
         await _firestore.collection('users').doc(box.userId).set({
-          'titiBalance': FieldValue.increment(box.price),
+          'tiniBalance': FieldValue.increment(box.price),
         }, SetOptions(merge: true));
       } catch (_) {}
 
@@ -318,7 +318,7 @@ class BoxProvider extends ChangeNotifier {
     final box = BoxModel.fromPostDoc(postDoc);
     if (box.ownedByUid != user.uid) return;
     await _firestore.collection('users').doc(user.uid).update({
-      'titiBalance': FieldValue.increment(box.price),
+      'tiniBalance': FieldValue.increment(box.price),
     });
     await _releaseBox(postId);
     await _secureStorage.delete(key: 'box_reservation_$postId');

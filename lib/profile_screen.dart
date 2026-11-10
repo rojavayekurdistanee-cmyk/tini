@@ -27,6 +27,7 @@ import 'share_profile_sheet.dart';
 import 'open_link_with_settings.dart';
 import 'package:flutter/rendering.dart';
 import 'audience_access.dart';
+import 'throne_earned_badge.dart';
 
 /*
   [Tini Project - The Radar Trigger V3]
@@ -1360,10 +1361,13 @@ if (!isOwnProfile)
                 child: Icon(Iconsax.edit, color: titiTeal, size: 20),
               ),
             if (isOwn) const SizedBox(width: 15),
-            Text(
+            Flexible(child: Text(
               name,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
-            ),
+            )),
+            if (viewedUid.isNotEmpty) EarnedThroneBadge(uid: viewedUid),
             const SizedBox(width: 15),
                         Material(
               color: Colors.transparent,

@@ -16,7 +16,7 @@ admin.initializeApp();
 const db = getFirestore();
 
 // [Tini: IAP إعدادات] - لازم تغير هذول
-const ANDROID_PACKAGE_NAME = "com.aras.istar";
+const ANDROID_PACKAGE_NAME = "com.aras.titistar";
 const APPLE_SHARED_SECRET = "YOUR_APPLE_SHARED_SECRET_HERE";
 
 // جدول المنتجات: كم عملة مقابل كل productId - السيرفر هو المرجع الوحيد

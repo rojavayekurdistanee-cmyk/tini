@@ -15,9 +15,12 @@ import 'crown_provider.dart';
 import 'king_fire_ring.dart';
 import 'profile_screen.dart';
 import 'throne_badges.dart';
+import 'throne_social.dart';
+import 'throne_earned_badge.dart';
+import 'throne_countdown.dart';
 
-/// واجهة عرش كاملة المساحة. تستخدم CrownProvider الحالي دون تعديل آلية المزايدة.
-/// تبقى ThroneSection الأصلية دون تغيير لتجنب التأثير على أي استخدام آخر لها.
+/// واجهة العرش؛ كل المزايدات والانتقالات المالية معتمدة من السيرفر.
+/// تحافظ على الهوية البصرية والمتابعة والبروفايل ومكافآت العرش.
 class TiniThroneFullScreen extends StatefulWidget {
   final bool hideBidField;
 
@@ -96,7 +99,9 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
             );
 
             return SingleChildScrollView(
-              key: const PageStorageKey<String>('tini_throne_full_screen_scroll'),
+              key: const PageStorageKey<String>(
+                'tini_throne_full_screen_scroll',
+              ),
               physics: const BouncingScrollPhysics(),
               padding: EdgeInsets.fromLTRB(side, top, side, bottom),
               child: Center(
@@ -129,6 +134,7 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
                         ],
                         _buildUserInfo(crown),
                         SizedBox(height: short ? 10 : 16),
+                        const ThroneSocial(),
                         const _ThroneRewardsSection(),
                         const SizedBox(height: 8),
                       ],
@@ -214,19 +220,13 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
         ],
       ),
       child: wide
-          ? Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: content,
-            )
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: content,
-            ),
+          ? Row(mainAxisAlignment: MainAxisAlignment.center, children: content)
+          : Column(mainAxisSize: MainAxisSize.min, children: content),
     );
   }
 
   Widget _buildKingAvatar(CrownProvider crown, {required bool wide}) {
-    final kingUid = crown.currentKingUid;
+    final kingUid = crown.displayUid;
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     final isOwnKing = kingUid != null && kingUid == myUid;
     final avatarRadius = wide ? 73.0 : 60.0;
@@ -241,11 +241,11 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
           GestureDetector(
             onTap: hasKing
                 ? () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => ProfileScreen(userId: kingUid),
-                      ),
-                    )
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ProfileScreen(userId: kingUid),
+                    ),
+                  )
                 : null,
             child: Container(
               decoration: BoxDecoration(
@@ -255,12 +255,13 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
               child: CircleAvatar(
                 radius: avatarRadius,
                 backgroundColor: AppColors.surface,
-                backgroundImage: crown.currentKingAvatar != null &&
-                        crown.currentKingAvatar!.isNotEmpty
-                    ? CachedNetworkImageProvider(crown.currentKingAvatar!)
+                backgroundImage:
+                    crown.displayAvatar != null &&
+                        crown.displayAvatar!.isNotEmpty
+                    ? CachedNetworkImageProvider(crown.displayAvatar!)
                     : null,
-                child: crown.currentKingAvatar == null ||
-                        crown.currentKingAvatar!.isEmpty
+                child:
+                    crown.displayAvatar == null || crown.displayAvatar!.isEmpty
                     ? const Icon(
                         Icons.person,
                         size: 36,
@@ -271,7 +272,10 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
             ),
           ),
           // زر المتابعة نفسه؛ لا نغيّر آلية المتابعة الموجودة في AuthProvider.
-          if (kingUid != null && kingUid.isNotEmpty && !isOwnKing && myUid != null)
+          if (kingUid != null &&
+              kingUid.isNotEmpty &&
+              !isOwnKing &&
+              myUid != null)
             Positioned(
               bottom: 0,
               right: 0,
@@ -313,14 +317,16 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
   }
 
   Widget _buildKingDetails(CrownProvider crown, {required bool wide}) {
-    final alignment = wide ? CrossAxisAlignment.start : CrossAxisAlignment.center;
+    final alignment = wide
+        ? CrossAxisAlignment.start
+        : CrossAxisAlignment.center;
     final textAlign = wide ? TextAlign.start : TextAlign.center;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: alignment,
       children: [
         Text(
-          crown.currentKingName ?? 'لا يوجد ملك حالياً',
+          crown.displayName ?? 'لا يوجد ملك حالياً',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           textAlign: textAlign,
@@ -330,6 +336,8 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
             fontWeight: FontWeight.bold,
           ),
         ),
+        if (crown.isThroneLocked && crown.currentKingUid != null)
+          EarnedThroneBadge(uid: crown.currentKingUid!),
         const SizedBox(height: 12),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -366,41 +374,12 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
     );
   }
 
-  Widget _buildCountdown(CrownProvider crown) {
-    final isLocked = crown.isThroneLocked && crown.lockEndTime != null;
-    final deadline = isLocked ? crown.lockEndTime : crown.auctionEndsAt;
-    if (deadline == null) {
-      return const Text(
-        'صارع الملك: زايد واستلم العرش',
-        textAlign: TextAlign.center,
-        style: TextStyle(color: AppColors.greyText, fontSize: 13),
-      );
-    }
-
-    final remaining = deadline.toDate().difference(DateTime.now());
-    if (remaining.isNegative) {
-      return Text(
-        isLocked ? 'جاري التصفير...' : 'انتهى المزاد',
-        textAlign: TextAlign.center,
-        style: const TextStyle(color: AppColors.error, fontSize: 13),
-      );
-    }
-    final days = remaining.inDays;
-    final hours = remaining.inHours % 24;
-    final minutes = remaining.inMinutes % 60;
-    final time = isLocked
-        ? '${days}ي ${hours}س ${minutes}د'
-        : '${remaining.inHours}س ${minutes}د';
-    return Text(
-      'ينتهي خلال: $time',
-      textAlign: TextAlign.center,
-      style: const TextStyle(
-        color: AppColors.primary,
-        fontSize: 14,
-        fontWeight: FontWeight.bold,
-      ),
-    );
-  }
+  Widget _buildCountdown(CrownProvider crown) => ThroneCountdown(
+    deadline: (crown.isThroneLocked ? crown.lockEndTime : crown.auctionEndsAt)
+        ?.toDate(),
+    reign: crown.isThroneLocked,
+    now: () => crown.serverNow,
+  );
 
   Widget _buildBidSection(CrownProvider crown) {
     if (crown.isThroneLocked) {
@@ -419,7 +398,7 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
             SizedBox(width: 8),
             Flexible(
               child: Text(
-                'العرش مغلق لمدة 7 أيام',
+                'المزايدات مغلقة خلال فترة الحكم',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: AppColors.error,
@@ -441,12 +420,15 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
       style: const TextStyle(color: AppColors.textPrimary, fontSize: 16),
       decoration: InputDecoration(
-        hintText: 'أدخل مزايدتك (${crown.currentBid + 100}+)',
+        hintText: 'أدخل مزايدتك (${crown.currentBid + 1}+)',
         hintStyle: const TextStyle(color: AppColors.greyText, fontSize: 14),
         filled: true,
         fillColor: AppColors.background,
         isDense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 16,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide.none,
@@ -455,7 +437,9 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
     );
 
     final bidButton = ElevatedButton(
-      onPressed: crown.isLoading ? null : () => _placeBid(crown),
+      onPressed: crown.isLoading || !crown.canBid
+          ? null
+          : () => _placeBid(crown),
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.primary,
         minimumSize: const Size(120, 52),
@@ -487,20 +471,14 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: AppColors.primary.withValues(alpha: 0.25),
-        ),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.25)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           if (constraints.maxWidth < 330) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                field,
-                const SizedBox(height: 10),
-                bidButton,
-              ],
+              children: [field, const SizedBox(height: 10), bidButton],
             );
           }
           return Row(
@@ -536,7 +514,10 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
             : 'تم وضع المزايدة! 👑',
       );
     } else {
-      _showMessage('لم تكتمل المزايدة. تحقق من الرصيد وحالة العرش.', isError: true);
+      _showMessage(
+        crown.lastError ?? 'لم تكتمل المزايدة. تحقق من الرصيد وحالة العرش.',
+        isError: true,
+      );
     }
   }
 
@@ -658,7 +639,9 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.iconInactive.withValues(alpha: 0.18)),
+        border: Border.all(
+          color: AppColors.iconInactive.withValues(alpha: 0.18),
+        ),
       ),
       child: Row(
         children: [
@@ -707,9 +690,7 @@ class _ThroneRewardsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final border = BorderSide(
-      color: AppColors.primary.withValues(alpha: 0.25),
-    );
+    final border = BorderSide(color: AppColors.primary.withValues(alpha: 0.25));
     final shape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(18),
       side: border,

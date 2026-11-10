@@ -11,6 +11,8 @@ import 'app_colors.dart';
 import 'profile_screen.dart';
 import 'auth_provider.dart' as custom;
 import 'king_fire_ring.dart';
+import 'throne_countdown.dart';
+import 'throne_earned_badge.dart';
 
 class ThroneSection extends StatefulWidget {
   final bool hideBidField;
@@ -126,7 +128,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
         ),
         const SizedBox(width: 3), // كان 4
         const Text(
-          'TITI Throne',
+          'Tini Throne',
           style: TextStyle(
             color: AppColors.textPrimary,
             fontSize: 14, // كان 16
@@ -141,7 +143,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
     const double avatarRadius = 48; // كان 28 - هذا أهم شي
     const double ringSize = avatarRadius * 2.6; // كان 2.8
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
-    final kingUid = crown.currentKingUid;
+    final kingUid = crown.displayUid;
     final isOwnKing = currentUserId == kingUid && kingUid != null;
 
     // الأفتار مع الزر - مفصول عن الحلقة
@@ -167,17 +169,17 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
             child: CircleAvatar(
               radius: avatarRadius - 1, // كان -2
               backgroundColor: AppColors.surface,
-              backgroundImage: crown.currentKingAvatar != null && crown.currentKingAvatar!.isNotEmpty
-                  ? CachedNetworkImageProvider(crown.currentKingAvatar!)
+              backgroundImage: crown.displayAvatar != null && crown.displayAvatar!.isNotEmpty
+                  ? CachedNetworkImageProvider(crown.displayAvatar!)
                   : null,
-              child: crown.currentKingAvatar == null || crown.currentKingAvatar!.isEmpty
+              child: crown.displayAvatar == null || crown.displayAvatar!.isEmpty
                   ? const Icon(Icons.person, size: 22, color: AppColors.iconInactive) // كان 28
                   : null,
             ),
           ),
         ),
         // زر الزائد لازق على الأفتار
-        if (kingUid != null && kingUid.isNotEmpty && !isOwnKing)
+        if (kingUid != null && kingUid.isNotEmpty && !isOwnKing && currentUserId != null)
           Positioned(
             bottom: 2,
             right: 2,
@@ -236,13 +238,15 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
         ),
         const SizedBox(height: 0), // كان 2
         Text(
-          crown.currentKingName ?? 'لا يوجد ملك حالياً',
+          crown.displayName ?? 'لا يوجد ملك حالياً',
           style: const TextStyle(
             color: AppColors.textPrimary,
             fontSize: 12, // كان 14
             fontWeight: FontWeight.bold,
           ),
         ),
+        if (crown.isThroneLocked && crown.currentKingUid != null)
+          EarnedThroneBadge(uid: crown.currentKingUid!),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1), // كان 10, 3
           decoration: BoxDecoration(
@@ -271,48 +275,10 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
     );
   }
 
-  Widget _buildCountdown(CrownProvider crown) {
-    // اذا العرش مقفول، نعرض عد تنازلي 7 أيام
-    if (crown.isThroneLocked && crown.lockEndTime != null) {
-      final remaining = crown.lockEndTime!.toDate().difference(DateTime.now());
-      if (remaining.isNegative) {
-        return const Text(
-          'جاري التصفير...',
-          style: TextStyle(color: AppColors.error, fontSize: 8),
-        );
-      }
-      final days = remaining.inDays;
-      final hours = remaining.inHours % 24;
-      final minutes = remaining.inMinutes % 60;
-      return Text(
-        'ينتهي خلال: ${days}ي ${hours}س ${minutes}د',
-        style: const TextStyle(color: AppColors.primary, fontSize: 9, fontWeight: FontWeight.bold),
-      );
-    }
-    
-    // الحالة العادية
-    if (crown.auctionEndsAt != null) {
-      final remaining = crown.auctionEndsAt!.toDate().difference(DateTime.now());
-      if (remaining.isNegative) {
-        return const Text(
-          'انتهى المزاد',
-          style: TextStyle(color: AppColors.error, fontSize: 8),
-        );
-      }
-      final hours = remaining.inHours;
-      final minutes = remaining.inMinutes % 60;
-      return Text(
-        'صارع الملك: زايد واستلم العرش',
-        style: TextStyle(color: AppColors.greyText, fontSize: 8),
-      );
-    }
-    
-    // اذا مافي مزاد شغال
-    return const Text(
-      'صارع الملك: زايد واستلم العرش',
-      style: TextStyle(color: AppColors.greyText, fontSize: 8),
-    );
-  }
+  Widget _buildCountdown(CrownProvider crown) => ThroneCountdown(
+    deadline: (crown.isThroneLocked ? crown.lockEndTime : crown.auctionEndsAt)?.toDate(),
+    reign: crown.isThroneLocked, now: () => crown.serverNow,
+  );
 
   Widget _buildBidSection(BuildContext context, CrownProvider crown) {
     if (widget.hideBidField) {
@@ -333,7 +299,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: AppColors.textPrimary, fontSize: 11), // كان 12
                     decoration: InputDecoration(
-                      hintText: 'أدخل مزايدتك (${crown.currentBid + 100}+)',
+                      hintText: 'أدخل مزايدتك (${crown.currentBid + 1}+)',
                       hintStyle: TextStyle(color: AppColors.greyText, fontSize: 9), // كان 10
                       filled: true,
                       fillColor: AppColors.background,
@@ -345,7 +311,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
                 ),
                 const SizedBox(width: 4), // كان 5
                 ElevatedButton(
-                  onPressed: crown.isLoading ? null : () async {
+                  onPressed: crown.isLoading || !crown.canBid ? null : () async {
                     final bid = int.tryParse(bidController.text);
                     if (bid == null || bid <= crown.currentBid) {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المزايدة يجب أن تكون أعلى'), backgroundColor: AppColors.error));
@@ -356,6 +322,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
                       return;
                     }
                     final success = await crown.placeBid(bid);
+                    if (!context.mounted) return;
                     if (success) {
                       bidController.clear();
                       if (bid >= CrownProvider.maxBid) {
@@ -363,6 +330,8 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم وضع المزايدة! 👑'), backgroundColor: AppColors.primary));
                       }
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(crown.lastError ?? 'تعذر تأكيد المزايدة'), backgroundColor: AppColors.error));
                     }
                   },
                   style: ElevatedButton.styleFrom(
@@ -386,7 +355,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
               border: Border.all(color: AppColors.error, width: 1),
             ),
             child: const Text(
-              'العرش مغلق لمدة 7 أيام',
+              'المزايدات مغلقة خلال فترة الحكم',
               style: TextStyle(color: AppColors.error, fontWeight: FontWeight.bold, fontSize: 11),
             ),
           ),

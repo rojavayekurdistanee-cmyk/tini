@@ -1,16 +1,30 @@
 {
-  "functions": {
-    "source": "functions",
-    "codebase": "default",
-    "region": "europe-west1",
-    "ignore": [
-      "node_modules",
-      ".git",
-      "firebase-debug.log",
-      "firebase-debug.*.log",
-      "*.local"
-    ]
-  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "region": "europe-west1",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local",
+        "throne-v2"
+      ]
+    },
+    {
+      "source": "functions/throne-v2",
+      "codebase": "throne-v2",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ],
   "firestore": {
     "rules": "firestore.rules"
   },

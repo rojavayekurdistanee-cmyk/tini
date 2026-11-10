@@ -39,9 +39,13 @@ service cloud.firestore {
       allow read: if true;
 
       // الكتابة فقط لصاحب الحساب، أو إذا كان مستخدم جديد + السماح بتعديل العداد
-      allow create: if request.auth!= null && (request.auth.uid == userId ||!exists(/databases/$(database)/documents/users/$(userId)));
-allow update: if request.auth != null && request.auth.uid == userId;
-      allow delete: if request.auth!= null && request.auth.uid == userId;
+      allow create: if request.auth!= null && (request.auth.uid == userId ||!exists(/databases/$(database)/documents/users/$(userId)))
+        && !request.resource.data.keys().hasAny(['throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
+allow update: if request.auth != null && request.auth.uid == userId
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
+      allow delete: if request.auth!= null && request.auth.uid == userId
+        && resource.data.get('throneReservedPoints', 0) == 0;
 
       // السماح بالوصول لمجموعة الإعجابات داخل ملف المستخدم
       match /likedPosts/{postId} {
@@ -569,15 +573,40 @@ allow delete: if request.auth != null && resource.data.toUid == request.auth.uid
         // ⭐ [Titi Star: العرش] - السماح بقراءة بيانات العرش الحالي للجميع
     match /throne_data/current {
       allow read: if true;
-      allow write: if request.auth!= null;
+      allow write: if false;
     }
 
     // ⭐ [Titi Star]: السماح بالمزايدة على العرش
     match /throne_bids/{bidId} {
       allow read: if request.auth!= null;
-      allow create: if request.auth!= null;
+      allow write: if false;
     }
 
+    // Throne v2: only Admin SDK transactions may write financial or entitlement data.
+    match /throne_auctions/{auctionId}/competitors/{uid} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+    match /throne_entitlements/{uid} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /throne_reigns/{id} {
+      allow read: if true;
+      allow write: if false;
+      match /reactions/{uid} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false;
+      }
+    }
+    match /throne_ledger/{id} {
+      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+      allow write: if false;
+    }
+    match /throne_requests/{uid}/bids/{id} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
     // ⭐ [Titi Star: بحر الصناديق] - السماح بقراءة الصناديق للجميع
     match /mystery_boxes/{docId} {
       allow read: if true;
