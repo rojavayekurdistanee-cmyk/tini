@@ -14,6 +14,7 @@ import 'auth_provider.dart' as custom;
 import 'crown_provider.dart';
 import 'king_fire_ring.dart';
 import 'profile_screen.dart';
+import 'throne_badges.dart';
 
 /// واجهة عرش كاملة المساحة. تستخدم CrownProvider الحالي دون تعديل آلية المزايدة.
 /// تبقى ThroneSection الأصلية دون تغيير لتجنب التأثير على أي استخدام آخر لها.
@@ -127,6 +128,8 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
                           SizedBox(height: short ? 10 : 16),
                         ],
                         _buildUserInfo(crown),
+                        SizedBox(height: short ? 10 : 16),
+                        const _ThroneRewardsSection(),
                         const SizedBox(height: 8),
                       ],
                     ),
@@ -693,6 +696,149 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
           ),
         ),
       ],
+    );
+  }
+}
+
+/// قسم توضيحي لمكافآت العرش؛ للعرض فقط ولا يمنح شارات أو يكتب إلى Firestore.
+/// يُغلق افتراضياً لتبقى شاشة العرش مركّزة على الملك والمزايدات.
+class _ThroneRewardsSection extends StatelessWidget {
+  const _ThroneRewardsSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final border = BorderSide(
+      color: AppColors.primary.withValues(alpha: 0.25),
+    );
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(18),
+      side: border,
+    );
+
+    return ExpansionTile(
+      key: const PageStorageKey<String>('tini_throne_rewards_expansion'),
+      initiallyExpanded: false,
+      maintainState: false, // يوقف حركة الشارة عندما تُغلق المكافآت.
+      backgroundColor: AppColors.surface,
+      collapsedBackgroundColor: AppColors.surface,
+      shape: shape,
+      collapsedShape: shape,
+      iconColor: const Color(0xFFFFD36B),
+      collapsedIconColor: AppColors.greyText,
+      textColor: AppColors.textPrimary,
+      collapsedTextColor: AppColors.textPrimary,
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
+      leading: const Icon(
+        Icons.workspace_premium_outlined,
+        color: Color(0xFFFFD36B),
+        size: 24,
+      ),
+      title: const Text(
+        'مكافآت العرش',
+        style: TextStyle(
+          color: AppColors.textPrimary,
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      subtitle: const Text(
+        'اضغط لاستكشاف شارات الملك الحالي والملك السابق',
+        style: TextStyle(color: AppColors.greyText, fontSize: 12),
+      ),
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            const gap = 10.0;
+            final availableWidth = constraints.maxWidth;
+            final twoColumns = availableWidth >= 300;
+            final tileWidth = twoColumns
+                ? (availableWidth - gap) / 2
+                : availableWidth;
+            final badgeSize = math.min(112.0, math.max(48.0, tileWidth - 22));
+
+            return Wrap(
+              alignment: WrapAlignment.center,
+              spacing: gap,
+              runSpacing: gap,
+              children: [
+                _ThroneRewardCard(
+                  width: tileWidth,
+                  badgeSize: badgeSize,
+                  kind: ThroneBadgeKind.currentKing,
+                  title: 'الملك الحالي',
+                  description: 'احصل على هذه الشارة أثناء حكمك للعرش',
+                ),
+                _ThroneRewardCard(
+                  width: tileWidth,
+                  badgeSize: badgeSize,
+                  kind: ThroneBadgeKind.formerKing,
+                  title: 'الملك السابق',
+                  description: 'احتفظ بهذه الشارة للأبد بعد انتهاء حكمك',
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// تعرض الشارة نفسها من throne_badges.dart دون أي تعديل على صورها أو حركتها.
+class _ThroneRewardCard extends StatelessWidget {
+  final double width;
+  final double badgeSize;
+  final ThroneBadgeKind kind;
+  final String title;
+  final String description;
+
+  const _ThroneRewardCard({
+    required this.width,
+    required this.badgeSize,
+    required this.kind,
+    required this.title,
+    required this.description,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isCurrent = kind == ThroneBadgeKind.currentKing;
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: (isCurrent ? const Color(0xFFFFD36B) : const Color(0xFFA98569))
+              .withValues(alpha: 0.35),
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ThroneBadgeImage(kind: kind, size: badgeSize),
+          const SizedBox(height: 7),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            description,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.greyText, fontSize: 12),
+          ),
+        ],
+      ),
     );
   }
 }
