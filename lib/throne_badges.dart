@@ -28,7 +28,6 @@ class ThroneBadgeImage extends StatefulWidget {
 class _ThroneBadgeImageState extends State<ThroneBadgeImage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _glowController;
-  bool _reduceMotion = false;
 
   @override
   void initState() {
@@ -36,19 +35,10 @@ class _ThroneBadgeImageState extends State<ThroneBadgeImage>
     _glowController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 4),
+      // لا تختصر الدورة أو تقطعها إعدادات الحركة المختلفة بين الهواتف.
+      animationBehavior: AnimationBehavior.preserve,
     );
     _syncAnimation();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // احترام إعدادات إمكانية الوصول وإيقاف المؤثرات عند طلب تقليل الحركة.
-    final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    if (_reduceMotion != reduceMotion) {
-      _reduceMotion = reduceMotion;
-      _syncAnimation();
-    }
   }
 
   @override
@@ -60,9 +50,7 @@ class _ThroneBadgeImageState extends State<ThroneBadgeImage>
   }
 
   void _syncAnimation() {
-    if (widget.kind == ThroneBadgeKind.currentKing &&
-        widget.animate &&
-        !_reduceMotion) {
+    if (widget.kind == ThroneBadgeKind.currentKing && widget.animate) {
       if (!_glowController.isAnimating) {
         _glowController.repeat();
       }
@@ -84,13 +72,14 @@ class _ThroneBadgeImageState extends State<ThroneBadgeImage>
     final asset = isCurrent
         ? 'assets/badges/tini_current_king_badge_final.png'
         : 'assets/badges/tini_former_king_badge_final.png';
+    final cacheWidth = (widget.size * MediaQuery.devicePixelRatioOf(context))
+        .round();
     final image = RepaintBoundary(
       child: Image.asset(
         asset,
         width: widget.size,
         height: widget.size,
-        cacheWidth: (widget.size * MediaQuery.devicePixelRatioOf(context))
-            .round(),
+        cacheWidth: cacheWidth,
         fit: BoxFit.contain,
         filterQuality: FilterQuality.medium,
         errorBuilder: (context, error, stackTrace) => SizedBox.square(
@@ -106,8 +95,8 @@ class _ThroneBadgeImageState extends State<ThroneBadgeImage>
       ),
     );
 
-    // الملك السابق ثابت. احترم إعداد النظام لتقليل الحركات.
-    if (!isCurrent || !widget.animate || MediaQuery.disableAnimationsOf(context)) {
+    // الملك السابق ثابت؛ وتظل الحركة قابلة للإيقاف عبر animate: false.
+    if (!isCurrent || !widget.animate) {
       return SizedBox.square(dimension: widget.size, child: image);
     }
 
@@ -123,26 +112,34 @@ class _ThroneBadgeImageState extends State<ThroneBadgeImage>
           final glowProgress = (1 - math.cos(phase)) * 0.5;
           final scale = 1.015 - 0.015 * math.cos(phase); // 1.00 → 1.03 → 1.00
 
-          // اللمعة تتحرك مرة كل أربع ثوان، وتختفي خارج حدود الشارة.
-          // srcATop يحافظ على شفافية الـ PNG ولا يرسم مستطيلاً فوقها.
+          // لمعة ذهبية كل أربع ثوان: طبقتا صورة شفافتان مقصوصتان
+          // بشكل شريط قطري. لا ShaderMask ولا مستطيل فوق الشارة.
+          // تمضي الطبقتان بالكامل خارج حدود الشارة قبل بدء دورة جديدة.
           final sweepActive = progress > 0.08 && progress < 0.60;
           final sweep = (progress - 0.08) / 0.52;
           final Widget badge = sweepActive
-              ? ShaderMask(
-                  blendMode: BlendMode.srcATop,
-                  shaderCallback: (bounds) => LinearGradient(
-                    begin: Alignment(-3.1 + 5.6 * sweep, -0.25),
-                    end: Alignment(-2.4 + 5.6 * sweep, 0.25),
-                    colors: const [
-                      Color(0x00FFF7CB),
-                      Color(0x12FFE7A3),
-                      Color(0xFFFFFBE2),
-                      Color(0x12FFE7A3),
-                      Color(0x00FFF7CB),
+              ? SizedBox.square(
+                  dimension: widget.size,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      child!,
+                      _buildGoldSweepBand(
+                        asset: asset,
+                        cacheWidth: cacheWidth,
+                        progress: sweep,
+                        halfWidth: 0.23,
+                        tint: const Color(0x65FFD36B),
+                      ),
+                      _buildGoldSweepBand(
+                        asset: asset,
+                        cacheWidth: cacheWidth,
+                        progress: sweep,
+                        halfWidth: 0.085,
+                        tint: const Color(0xD9FFFBE2),
+                      ),
                     ],
-                    stops: [0.0, 0.30, 0.50, 0.70, 1.0],
-                  ).createShader(bounds),
-                  child: child!,
+                  ),
                 )
               : child!;
 
@@ -182,6 +179,59 @@ class _ThroneBadgeImageState extends State<ThroneBadgeImage>
       ),
     );
   }
+
+  // استخدام لون الصورة نفسها مع BlendMode.srcIn يحافظ على ألفا PNG.
+  // ClipPath يقص اللمعة بالشكل القطري دون الاعتماد على ShaderMask.
+  Widget _buildGoldSweepBand({
+    required String asset,
+    required int cacheWidth,
+    required double progress,
+    required double halfWidth,
+    required Color tint,
+  }) {
+    return ClipPath(
+      clipper: _GoldSweepClipper(progress: progress, halfWidth: halfWidth),
+      child: Image.asset(
+        asset,
+        width: widget.size,
+        height: widget.size,
+        cacheWidth: cacheWidth,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.medium,
+        color: tint,
+        colorBlendMode: BlendMode.srcIn,
+        errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+      ),
+    );
+  }
+}
+
+/// شريط لامع قطري يتحرك من خارج الصورة إلى خارجها، دون قطع مفاجئ.
+class _GoldSweepClipper extends CustomClipper<Path> {
+  final double progress;
+  final double halfWidth;
+
+  const _GoldSweepClipper({
+    required this.progress,
+    required this.halfWidth,
+  });
+
+  @override
+  Path getClip(Size size) {
+    final centerX = size.width * (-0.75 + 2.50 * progress);
+    final skew = size.width * 0.17;
+    final halfBand = size.width * halfWidth;
+    return Path()
+      ..moveTo(centerX + skew - halfBand, 0)
+      ..lineTo(centerX + skew + halfBand, 0)
+      ..lineTo(centerX - skew + halfBand, size.height)
+      ..lineTo(centerX - skew - halfBand, size.height)
+      ..close();
+  }
+
+  @override
+  bool shouldReclip(covariant _GoldSweepClipper oldClipper) =>
+      oldClipper.progress != progress || oldClipper.halfWidth != halfWidth;
 }
 
 /// معاينة بصرية فقط. لا تمنح أي شارة، ولا تكتب إلى Firestore.
