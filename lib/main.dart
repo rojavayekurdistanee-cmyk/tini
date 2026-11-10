@@ -61,9 +61,13 @@ void main() async {
   await NotificationService().init();
 
   // 5. [App Check Debug]: تفعيل وضع التطوير
+  const debugToken = String.fromEnvironment('APP_CHECK_DEBUG_TOKEN');
+
   await FirebaseAppCheck.instance.activate(
-    androidProvider: AndroidProvider.debug,
-    appleProvider: AppleProvider.debug,
+    providerAndroid: AndroidDebugProvider(
+      debugToken: debugToken.isEmpty ? null : debugToken,
+    ),
+    providerApple: const AppleDebugProvider(),
   );
 
   // 6. [الهوية البصرية]: ضبط ألوان النظام لتلتحم مع أشرطة Tini المعتمدة
