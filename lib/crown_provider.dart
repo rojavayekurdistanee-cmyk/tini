@@ -21,7 +21,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
   Timestamp? _auctionEndsAt;
   bool _isLoading = false;
 
-  // جديد: قفل العرش
+  // قفل العرش
   bool _isThroneLocked = false;
   Timestamp? _lockEndTime;
 
@@ -32,41 +32,51 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
   StreamSubscription? _throneSub;
   StreamSubscription? _authSub;
   StreamSubscription? _userSub;
-  StreamSubscription? _pointsSub;
+
   final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
+
   String? auctionId;
   String? leaderUid;
   String? leaderName;
   String? leaderAvatar;
   String? coronationId;
   String? lastError;
+
   bool _ready = false;
   bool _enabled = false;
   bool _disposed = false;
   Duration _serverOffset = Duration.zero;
+
   String? _pendingRequest;
   String? _pendingAuction;
   int? _pendingAmount;
   int _reserved = 0;
+
   int get reservedPoints => _reserved;
   bool get hasPendingBid => _pendingRequest != null;
   bool get enabled => _ready && _enabled;
+
   String? get availabilityMessage => !_ready
       ? 'نظام العرش بانتظار تفعيل السيرفر'
       : !_enabled
       ? 'المزايدات غير مفعلة حالياً'
       : null;
+
   DateTime get serverNow => DateTime.now().add(_serverOffset);
+
   bool get canBid =>
       _ready &&
       _enabled &&
       !_isThroneLocked &&
       _auctionEndsAt != null &&
       _auctionEndsAt!.toDate().isAfter(serverNow);
+
   String? get displayUid =>
       (!_ready || _isThroneLocked) ? _currentKingUid : leaderUid;
+
   String? get displayName =>
       (!_ready || _isThroneLocked) ? _currentKingName : leaderName;
+
   String? get displayAvatar =>
       (!_ready || _isThroneLocked) ? _currentKingAvatar : leaderAvatar;
 
@@ -100,8 +110,10 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLoading => _isLoading;
   int get myPoints => _myPoints;
   String get myCrownNumber => _myCrownNumber;
+
   bool get isKing =>
       _currentKingUid != null && _currentKingUid == _auth.currentUser?.uid;
+
   bool get isThroneLocked => _isThroneLocked;
   Timestamp? get lockEndTime => _lockEndTime;
 
@@ -139,7 +151,6 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
     _throneSub?.cancel();
     _authSub?.cancel();
     _userSub?.cancel();
-    _pointsSub?.cancel();
 
     // 1. مراقبة بيانات العرش لحظياً
     _throneSub = _firestore
@@ -191,10 +202,9 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
           },
         );
 
-    // 2. مراقبة نقاط المستخدم الحالي
+    // 2. مراقبة الرصيد والنقاط المحجوزة ورقم التاج باشتراك واحد
     _authSub = _auth.authStateChanges().listen((user) {
       _userSub?.cancel();
-      _pointsSub?.cancel();
       _myPoints = 0;
       _reserved = 0;
       _myCrownNumber = '';
@@ -203,45 +213,55 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pendingAmount = null;
       _enabled = false;
       notifyListeners();
+
       if (user != null) {
         unawaited(_loadPending(user.uid));
         unawaited(sync());
-        _pointsSub = _firestore
+
+        _userSub = _firestore
             .collection('users')
             .doc(user.uid)
             .snapshots()
             .listen(
               (doc) {
-                if (_auth.currentUser?.uid != user.uid) return;
+                if (_disposed || _auth.currentUser?.uid != user.uid) return;
+
                 final data = doc.data();
-                _myPoints = data?['walletVersion'] == 2
+                final points = data?['walletVersion'] == 2
                     ? (data?['tiniBalance'] as num? ?? 0).toInt()
                     : 0;
-                _reserved = (data?['throneReservedPoints'] as num? ?? 0)
+                final reserved = (data?['throneReservedPoints'] as num? ?? 0)
                     .toInt();
+                final crownNumber = doc.exists
+                    ? (data?['crownNumber'] ?? _generateCrownNumber(user.uid))
+                    : _myCrownNumber;
+
+                // لا نحدّث الواجهة إذا لم تتغير القيم المستخدمة.
+                if (_myPoints == points &&
+                    _reserved == reserved &&
+                    _myCrownNumber == crownNumber) {
+                  return;
+                }
+
+                _myPoints = points;
+                _reserved = reserved;
+                _myCrownNumber = crownNumber;
                 notifyListeners();
               },
               onError: (Object error) {
-                if (_auth.currentUser?.uid != user.uid) return;
+                if (_disposed || _auth.currentUser?.uid != user.uid) return;
+
+                const message = 'تعذر تحديث نقاط العرش؛ أعد المحاولة';
+                final changed =
+                    _myPoints != 0 || _reserved != 0 || lastError != message;
+
                 _myPoints = 0;
                 _reserved = 0;
-                lastError = 'تعذر تحديث نقاط العرش؛ أعد المحاولة';
-                notifyListeners();
+                lastError = message;
+
+                if (changed) notifyListeners();
               },
             );
-        _userSub = _firestore
-            .collection('users')
-            .doc(user.uid)
-            .snapshots()
-            .listen((doc) {
-              if (doc.exists) {
-                final data = doc.data()!;
-                if (_auth.currentUser?.uid != user.uid) return;
-                _myCrownNumber =
-                    data['crownNumber'] ?? _generateCrownNumber(user.uid);
-                notifyListeners();
-              }
-            });
       }
     });
   }
@@ -353,7 +373,6 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
     _throneSub?.cancel();
     _authSub?.cancel();
     _userSub?.cancel();
-    _pointsSub?.cancel();
     _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
