@@ -1367,8 +1367,8 @@ if (!isOwnProfile)
               style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
             )),
             if (viewedUid.isNotEmpty) EarnedThroneBadge(uid: viewedUid),
-            const SizedBox(width: 15),
-                        Material(
+            if (isOwn) const SizedBox(width: 15),
+            if (isOwn) Material(
               color: Colors.transparent,
               child: InkWell(
   onTap: () {
