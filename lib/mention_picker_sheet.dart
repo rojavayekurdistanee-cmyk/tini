@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 // [Tini] ملف mention_picker_sheet.dart - ملف مستقل لاختيار المستخدمين للمنشن
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -55,7 +56,7 @@ class _MentionPickerSheetState extends State<MentionPickerSheet> {
   Future<List<Map<String, dynamic>>> _fetchUsersByIds(List<String> ids) async {
     if (ids.isEmpty) return [];
     final docs = await Future.wait(
-      ids.map((id) => FirebaseFirestore.instance.collection('users').doc(id).get()),
+      ids.map((id) => UserDocuments.readable(FirebaseFirestore.instance, id).get()),
     );
     final users = docs.where((d) => d.exists).map((d) => {'uid': d.id,...d.data() as Map<String, dynamic>}).toList();
     return MentionPrivacyService.filterMentionableUsers(users);
@@ -90,14 +91,14 @@ class _MentionPickerSheetState extends State<MentionPickerSheet> {
     if (q.isEmpty) return [];
 
     final usernameSnap = await FirebaseFirestore.instance
-       .collection('users')
+       .collection('public_profiles')
        .where('username_lowercase', isGreaterThanOrEqualTo: q)
        .where('username_lowercase', isLessThan: q + '\uf8ff')
        .limit(20)
        .get();
 
     final fullNameSnap = await FirebaseFirestore.instance
-       .collection('users')
+       .collection('public_profiles')
        .where('fullName_lowercase', isGreaterThanOrEqualTo: q)
        .where('fullName_lowercase', isLessThan: q + '\uf8ff')
        .limit(20)

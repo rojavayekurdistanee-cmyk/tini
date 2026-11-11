@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -135,7 +136,7 @@ class ChatProvider extends ChangeNotifier {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
     try {
-      final doc = await _firestore.collection('users').doc(uid).get();
+      final doc = await UserDocuments.readable(_firestore, uid).get();
       final List fromField = doc.data()?['blockedUsers']?? doc.data()?['blocked']?? [];
       _blockedIds = fromField.map((e) => e.toString()).toSet();
       final snap = await _firestore.collection('users').doc(uid).collection('blocked').get();
@@ -242,7 +243,7 @@ class ChatProvider extends ChangeNotifier {
         _pendingFollowRequests += diff;
 
         final lastDoc = snap.docs.first;
-        FirebaseFirestore.instance.collection('users').doc(lastDoc.id).get().then((userDoc) {
+        UserDocuments.readable(FirebaseFirestore.instance, lastDoc.id).get().then((userDoc) {
           if (userDoc.exists) {
             _lastFollower = userDoc.data();
             _lastFollower!['uid'] = lastDoc.id;
@@ -310,7 +311,7 @@ class ChatProvider extends ChangeNotifier {
 
             final likeData = doc.data();
             final fromUid = likeData['fromUid'];
-            final userDoc = await _firestore.collection('users').doc(fromUid).get();
+            final userDoc = await UserDocuments.readable(_firestore, fromUid).get();
             if (userDoc.exists) {
               final userData = userDoc.data()!;
               _bannerManager.showLikeBanner(
@@ -339,7 +340,7 @@ class ChatProvider extends ChangeNotifier {
 
             final commentData = doc.data();
             final fromUid = commentData['fromUid'];
-            final userDoc = await _firestore.collection('users').doc(fromUid).get();
+            final userDoc = await UserDocuments.readable(_firestore, fromUid).get();
             if (userDoc.exists) {
               final userData = userDoc.data()!;
               _bannerManager.showCommentBanner(
@@ -368,7 +369,7 @@ class ChatProvider extends ChangeNotifier {
 
             final followData = doc.data();
             final fromUid = followData['fromUid'];
-            final userDoc = await _firestore.collection('users').doc(fromUid).get();
+            final userDoc = await UserDocuments.readable(_firestore, fromUid).get();
             if (userDoc.exists) {
               final userData = userDoc.data()!;
               _bannerManager.showFollowBanner(
@@ -395,7 +396,7 @@ class ChatProvider extends ChangeNotifier {
 
             final mentionData = doc.data();
             final fromUid = mentionData['fromUid'];
-            final userDoc = await _firestore.collection('users').doc(fromUid).get();
+            final userDoc = await UserDocuments.readable(_firestore, fromUid).get();
             if (userDoc.exists) {
               final userData = userDoc.data()!;
               _bannerManager.showMentionBanner(
@@ -433,7 +434,7 @@ class ChatProvider extends ChangeNotifier {
         final visitData = doc.data();
         final visitorId = visitData['visitorId'];
         if (visitorId == null) continue;
-        final userDoc = await _firestore.collection('users').doc(visitorId).get();
+        final userDoc = await UserDocuments.readable(_firestore, visitorId).get();
         if (userDoc.exists) {
           final userData = userDoc.data()!;
           _bannerManager.showVisitBanner(fromUid: visitorId, name: userData['fullName'] ?? userData['username'] ?? 'مستخدم', img: userData['profileImg'] ?? '');
@@ -454,7 +455,7 @@ class ChatProvider extends ChangeNotifier {
         .where('participants', arrayContains: uid)
         .snapshots()
         .listen((roomsSnap) async {
-      final userDoc = await _firestore.collection('users').doc(uid).get();
+      final userDoc = await UserDocuments.readable(_firestore, uid).get();
       final bool allowRead = userDoc.data()?['showReadReceipts'] ?? true;
       for (var roomDoc in roomsSnap.docs) {
         _firestore
@@ -666,7 +667,7 @@ class ChatProvider extends ChangeNotifier {
   }) async {
     try {
       // قراءة الخادم حتى لا نسمح بطلب جديد بناءً على إعداد مخزّن قديم.
-      final receiverDoc = await _firestore.collection('users').doc(receiverUid)
+      final receiverDoc = await UserDocuments.readable(_firestore, receiverUid)
           .get(const GetOptions(source: Source.server));
       final receiverData = receiverDoc.data();
       if (receiverData == null) {
@@ -767,7 +768,7 @@ class ChatProvider extends ChangeNotifier {
           ? currentUserImg! : (ownInfo['profileImg'] ?? '').toString();
 
       if (myName.isEmpty || !ownInfo.containsKey('profileImg')) {
-        final myDoc = await _firestore.collection('users').doc(currentUid).get();
+        final myDoc = await UserDocuments.readable(_firestore, currentUid).get();
         final myData = myDoc.data() ?? {};
         myName = myName.isEmpty ? (myData['fullName'] ?? myData['username'] ?? 'مستخدم').toString() : myName;
         myImg = myImg.isEmpty ? (myData['profileImg'] ?? '').toString() : myImg;
@@ -1003,7 +1004,7 @@ class ChatProvider extends ChangeNotifier {
 
             // [ACTIVITY] تسجيل رسالة جديدة - مع المضمون
       try {
-        final senderDoc = await _firestore.collection('users').doc(senderId).get();
+        final senderDoc = await UserDocuments.readable(_firestore, senderId).get();
         final senderName = senderDoc.data()?['fullName']?? senderDoc.data()?['username']?? 'مستخدم';
         String bodyText = preview;
         if (type == 'text' && text != null && text.isNotEmpty) {
@@ -1133,7 +1134,7 @@ class ChatProvider extends ChangeNotifier {
     try {
       final roomRef = _firestore.collection('chat_rooms').doc(roomId);
       await roomRef.update({'unreadCount.$uid': 0});
-      final userDoc = await _firestore.collection('users').doc(uid).get();
+      final userDoc = await UserDocuments.readable(_firestore, uid).get();
       final bool allowRead = userDoc.data()?['showReadReceipts'] ?? true;
 
       final last = await TiniChatReadCheckpoint.get('read-private', roomId, uid);
@@ -1425,7 +1426,7 @@ class ChatProvider extends ChangeNotifier {
         final batchIds = allFriendIds.skip(i).take(10).toList();
         final batchKey = batchIds.join('_');
 
-        final sub = _firestore.collection('users').where(FieldPath.documentId, whereIn: batchIds).snapshots().listen((querySnap) async {
+        final sub = _firestore.collection('public_profiles').where(FieldPath.documentId, whereIn: batchIds).snapshots().listen((querySnap) async {
           for (var userSnap in querySnap.docs) {
             if (!userSnap.exists) continue;
             final friendId = userSnap.id;

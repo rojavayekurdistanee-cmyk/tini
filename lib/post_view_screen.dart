@@ -1478,7 +1478,7 @@ class _PostItemContentState extends State<PostItemContent>
     final username = text.replaceFirst('@', '').toLowerCase().trim();
     if (username.isEmpty) return;
     try {
-      final result = await FirebaseFirestore.instance.collection('users')
+      final result = await FirebaseFirestore.instance.collection('public_profiles')
           .where('username_lowercase', isEqualTo: username)
           .limit(1).get();
       if (!mounted || result.docs.isEmpty) return;

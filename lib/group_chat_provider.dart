@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -30,7 +31,7 @@ class GroupChatProvider extends ChangeNotifier {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
     try {
-      final doc = await _firestore.collection('users').doc(uid).get();
+      final doc = await UserDocuments.readable(_firestore, uid).get();
       final List fromField = doc.data()?['blockedUsers']?? doc.data()?['blocked']?? [];
       _blockedIds = fromField.map((e) => e.toString()).toSet();
       final snap = await _firestore.collection('users').doc(uid).collection('blocked').get();
@@ -47,7 +48,7 @@ class GroupChatProvider extends ChangeNotifier {
   Future<bool> canAddUser(String adderId, String targetId) async {
     if (adderId == targetId) return true;
     try {
-      final doc = await _firestore.collection('users').doc(targetId).get();
+      final doc = await UserDocuments.readable(_firestore, targetId).get();
       if (!doc.exists) return true;
       final privacy = doc.data()?['groupAddPrivacy']?? 'following';
       if (privacy == 'all') return true;
@@ -167,7 +168,7 @@ class GroupChatProvider extends ChangeNotifier {
     final now = DateTime.now();
     if (_senderCacheUid != currentUid || _senderCacheAt == null ||
         now.difference(_senderCacheAt!) > const Duration(seconds: 90)) {
-      final userDoc = await _firestore.collection('users').doc(currentUid).get();
+      final userDoc = await UserDocuments.readable(_firestore, currentUid).get();
       _senderCache = userDoc.data() ?? <String, dynamic>{};
       _senderCacheUid = currentUid;
       _senderCacheAt = now;
@@ -259,7 +260,7 @@ class GroupChatProvider extends ChangeNotifier {
         'unreadCount.$uid': 0,
         'deletedFor.$uid': FieldValue.delete(),
       });
-      final userDoc = await _firestore.collection('users').doc(uid).get();
+      final userDoc = await UserDocuments.readable(_firestore, uid).get();
       final bool allowRead = userDoc.data()?['showReadReceipts'] ?? true;
 
       final last = await TiniChatReadCheckpoint.get('read-group', groupId, uid);

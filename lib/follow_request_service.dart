@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
@@ -34,7 +35,7 @@ class FollowRequestService {
           if (snapshot.docs.isEmpty) return null;
           
           final fromUserId = snapshot.docs.first.data()['fromUserId'] as String;
-          final userDoc = await _firestore.collection('users').doc(fromUserId).get();
+          final userDoc = await UserDocuments.readable(_firestore, fromUserId).get();
           
           if (!userDoc.exists) return null;
           
@@ -100,7 +101,7 @@ class FollowRequestService {
           
           for (var doc in snapshot.docs) {
             final fromUserId = doc.data()['fromUserId'] as String;
-            final userDoc = await _firestore.collection('users').doc(fromUserId).get();
+            final userDoc = await UserDocuments.readable(_firestore, fromUserId).get();
             
             if (!userDoc.exists) continue;
             

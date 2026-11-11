@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'audience_access.dart';
 import 'audience_gate.dart';
@@ -823,7 +824,7 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
               left: 0,
               right: 0,
               child: FutureBuilder<DocumentSnapshot>(
-                future: FirebaseFirestore.instance.collection('users').doc(widget.ownerUid).get(),
+                future: UserDocuments.readable(FirebaseFirestore.instance, widget.ownerUid).get(),
                 builder: (context, ownerSnap) {
                   if (!ownerSnap.hasData) return const SizedBox.shrink();
                   final ownerData = ownerSnap.data!.data() as Map<String, dynamic>? ?? {};

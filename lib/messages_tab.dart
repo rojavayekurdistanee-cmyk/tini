@@ -150,7 +150,7 @@ class _MessagesTabState extends State<MessagesTab> {
     Future<List<String>> _getGroupMemberPhotos(List<String> memberIds) async {
     if (memberIds.isEmpty) return [];
     final ids = memberIds.length > 10? memberIds.sublist(memberIds.length - 10) : memberIds;
-    final snap = await FirebaseFirestore.instance.collection('users').where(FieldPath.documentId, whereIn: ids).get();
+    final snap = await FirebaseFirestore.instance.collection('public_profiles').where(FieldPath.documentId, whereIn: ids).get();
     List<String> photos = snap.docs.map((d) {
       final data = d.data() as Map<String, dynamic>;
       return (data['profileImg']?? '') as String;

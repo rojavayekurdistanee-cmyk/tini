@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -146,7 +147,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (_userPhotoFutureCache.containsKey(uid)) {
       return _userPhotoFutureCache[uid]!;
     }
-    final future = FirebaseFirestore.instance.collection('users').doc(uid).get().then((snap) {
+    final future = UserDocuments.readable(FirebaseFirestore.instance, uid).get().then((snap) {
       String photo = '';
       if (snap.exists) {
         final data = snap.data();
@@ -481,7 +482,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final ids = memberIds.length > 10? memberIds.sublist(memberIds.length - 10) : memberIds;
     if (ids.isEmpty) return [];
     final snap = await FirebaseFirestore.instance
-      .collection('users')
+      .collection('public_profiles')
       .where(FieldPath.documentId, whereIn: ids)
       .get();
     List<String> photos = snap.docs.map((d) {

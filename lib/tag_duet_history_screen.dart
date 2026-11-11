@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
@@ -167,7 +168,7 @@ class _TagDuetHistoryScreenState extends State<TagDuetHistoryScreen> {
                         final isDuet = type == 'duet';
                         final textType = isDuet? "عمل ديو مع فيديو لك" : "ذكرك في وصف فيديو";
                         return FutureBuilder<DocumentSnapshot>(
-                          future: FirebaseFirestore.instance.collection('users').doc(fromUid).get(),
+                          future: UserDocuments.readable(FirebaseFirestore.instance, fromUid).get(),
                           builder: (context, userSnap) {
                             String fullName = 'مستخدم'; String profileImg = '';
                             if (userSnap.hasData && userSnap.data!.exists) {

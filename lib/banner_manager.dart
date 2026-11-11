@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -66,7 +67,7 @@ class BannerManager {
       final data = doc.data() as Map<String, dynamic>;
       final fromUid = data['fromUid']; if (fromUid==null) continue;
       try {
-        final userDoc = await _firestore.collection('users').doc(fromUid).get();
+        final userDoc = await UserDocuments.readable(_firestore, fromUid).get();
         if (!userDoc.exists) continue;
         final u = userDoc.data()!;
         _enqueue(BannerType.story, {'uid':fromUid,'name':u['fullName']??u['username']??'مستخدم','img':u['profileImg']??'','text':'نشر قصة'});

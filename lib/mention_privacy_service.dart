@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 // [Tini - Mention Privacy]: فحص صلاحية الذكر باستخدام علاقات المتابعة الفعلية.
 // يتم استخدام الخدمة عند اختيار الأشخاص، وكتابة @، وقبل النشر وإرسال التعليقات.
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -52,7 +53,7 @@ class MentionPrivacyService {
     if (targetData != null) {
       data = targetData;
     } else {
-      final snap = await _db.collection('users').doc(targetUid).get(
+      final snap = await UserDocuments.readable(_db, targetUid).get(
         const GetOptions(source: Source.server),
       );
       if (!snap.exists) return false;
@@ -107,11 +108,11 @@ class MentionPrivacyService {
     final q = query.toLowerCase().trim();
     if (q.isEmpty) return [];
     final results = await Future.wait([
-      _db.collection('users')
+      _db.collection('public_profiles')
           .where('username_lowercase', isGreaterThanOrEqualTo: q)
           .where('username_lowercase', isLessThan: '$q\uf8ff')
           .limit(12).get(const GetOptions(source: Source.server)),
-      _db.collection('users')
+      _db.collection('public_profiles')
           .where('fullName_lowercase', isGreaterThanOrEqualTo: q)
           .where('fullName_lowercase', isLessThan: '$q\uf8ff')
           .limit(12).get(const GetOptions(source: Source.server)),
@@ -168,7 +169,7 @@ class MentionPrivacyService {
     Future<void> allowUser(String uid, String label,
         {Map<String, dynamic>? data}) async {
       final userData = data ??
-          (await _db.collection('users').doc(uid)
+          (await UserDocuments.readable(_db, uid)
                   .get(const GetOptions(source: Source.server))).data();
       if (userData == null ||
           !await canMentionUser(
@@ -183,7 +184,7 @@ class MentionPrivacyService {
     for (final value in selected) {
       final username = value.replaceFirst(RegExp(r'^@'), '').toLowerCase().trim();
       if (username.isEmpty) continue;
-      final snap = await _db.collection('users')
+      final snap = await _db.collection('public_profiles')
           .where('username_lowercase', isEqualTo: username)
           .limit(1).get(const GetOptions(source: Source.server));
       if (snap.docs.isEmpty) throw MentionNotAllowedException(username);
@@ -227,7 +228,7 @@ class MentionPrivacyService {
         final candidate = words.take(count).join(' ');
         if (count == 1) {
           // اليوزرنيم الأحادي يحتفظ بمعناه القديم للمنشن في أوصاف الفيديو.
-          final byUsername = await _db.collection('users')
+          final byUsername = await _db.collection('public_profiles')
               .where('username_lowercase', isEqualTo: candidate)
               .limit(1).get(const GetOptions(source: Source.server));
           if (byUsername.docs.isNotEmpty) {
@@ -237,7 +238,7 @@ class MentionPrivacyService {
             break;
           }
         }
-        final byFullName = await _db.collection('users')
+        final byFullName = await _db.collection('public_profiles')
             .where('fullName_lowercase', isEqualTo: candidate)
             .limit(2).get(const GetOptions(source: Source.server));
         if (byFullName.docs.length > 1) {

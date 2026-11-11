@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'post_provider.dart';
@@ -102,7 +103,7 @@ class _PostLikeButtonState extends State<PostLikeButton> with SingleTickerProvid
         // جيب اسم يلي عمل لايك
         String userName = 'مستخدم';
         try {
-          final userDoc = await FirebaseFirestore.instance.collection('users').doc(widget.currentUserId).get();
+          final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, widget.currentUserId).get();
           if (userDoc.exists) {
             final data = userDoc.data() as Map<String, dynamic>;
             userName = data['fullName'] ?? data['username'] ?? 'مستخدم';

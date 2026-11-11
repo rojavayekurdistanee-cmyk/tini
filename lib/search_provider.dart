@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -136,7 +137,7 @@ class SearchProvider extends ChangeNotifier {
     }
     // [Tini: Phase 4 - نظام الحظر - مركزي]
     try {
-      final userDoc2 = await _firestore.collection('users').doc(uid).get();
+      final userDoc2 = await UserDocuments.readable(_firestore, uid).get();
       final List bField = userDoc2.data()?['blockedUsers'] ?? userDoc2.data()?['blocked'] ?? [];
       blocked = bField.map((e) => e.toString()).toSet().toList();
       final blockedSnap = await _firestore.collection('users').doc(uid).collection('blocked').get();
@@ -207,7 +208,7 @@ class SearchProvider extends ChangeNotifier {
 
     // البحث بـ username_lowercase
     final usernameQuery = await _firestore
-.collection('users')
+.collection('public_profiles')
 .where('username_lowercase', isGreaterThanOrEqualTo: q)
 .where('username_lowercase', isLessThanOrEqualTo: '$q\uf8ff')
 .limit(20)
@@ -215,7 +216,7 @@ class SearchProvider extends ChangeNotifier {
 
     // البحث بـ fullName_lowercase
     final nameQuery = await _firestore
-.collection('users')
+.collection('public_profiles')
 .where('fullName_lowercase', isGreaterThanOrEqualTo: q)
 .where('fullName_lowercase', isLessThanOrEqualTo: '$q\uf8ff')
 .limit(20)
@@ -223,6 +224,10 @@ class SearchProvider extends ChangeNotifier {
 
     final allDocs = [...usernameQuery.docs,...nameQuery.docs];
     final seenIds = <String>{};
+    final reverseBlockedIds = _myUid.isEmpty
+        ? <String>{}
+        : (await _firestore.collection('users').doc(_myUid)
+            .collection('blockedBy').get()).docs.map((doc) => doc.id).toSet();
 
     for (var doc in allDocs) {
       if (seenIds.contains(doc.id)) continue;
@@ -232,15 +237,7 @@ class SearchProvider extends ChangeNotifier {
       if (_myBlockedList.toSet().contains(doc.id)) continue;
       if (doc.id == _myUid) continue;
       final data = doc.data();
-      final List targetBlocked = data['blockedUsers']?? data['blocked']?? [];
-      if (targetBlocked.toSet().contains(_myUid)) continue;
-      // فحص اضافي من subcollection اذا كان الحقل فاضي (للتوافق)
-      if (targetBlocked.isEmpty) {
-        try {
-          final targetSnap = await _firestore.collection('users').doc(doc.id).collection('blocked').doc(_myUid).get();
-          if (targetSnap.exists) continue;
-        } catch (_) {}
-      }
+      if (reverseBlockedIds.contains(doc.id)) continue;
       // فلترة العمر - AUDIENCE CONTROL: الحساب كله 18+ ما يظهر للقاصر
       // تُطبّق لحظياً في getter بالاعتماد على الحساب الحالي.
       _audience.canViewProfile(doc.id);
@@ -512,7 +509,7 @@ class SearchProvider extends ChangeNotifier {
     if (_myUid.isEmpty) return;
 
     final uid = _myUid;
-    final doc = await _firestore.collection('users').doc(uid).get();
+    final doc = await UserDocuments.readable(_firestore, uid).get();
     if (uid != (_auth.currentUser?.uid ?? '') || _disposed) return;
     if (doc.exists) {
       final data = doc.data()!;

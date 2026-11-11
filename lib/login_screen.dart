@@ -200,7 +200,7 @@ Widget _buildAccountTileFromUid(String uid) {
         }
       }
       return FutureBuilder<DocumentSnapshot>(
-        future: FirebaseFirestore.instance.collection('users').doc(uid).get(),
+        future: FirebaseFirestore.instance.collection('public_profiles').doc(uid).get(),
         builder: (context, snapshot) {
           if (!snapshot.hasData ||!snapshot.data!.exists) {
             if (prefsSnap.hasData) {

@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'audience_message_gate.dart';
 import 'audience_access.dart';
@@ -182,8 +183,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _storiesStream = firestore.collection('stories').doc(widget.viewedUid)
         .collection('items').where('expiresAt', isGreaterThan: Timestamp.now()).snapshots();
     _roomStream = firestore.collection('chat_rooms').doc(_chatRoomId).snapshots();
-    _peerStatusStream = firestore.collection('users').doc(widget.viewedUid).snapshots();
-    _myStatusStream = firestore.collection('users').doc(currentUid).snapshots();
+    _peerStatusStream = UserDocuments.readable(firestore, widget.viewedUid).snapshots();
+    _myStatusStream = UserDocuments.readable(firestore, currentUid).snapshots();
     _mutualFriendFuture = ActivityStatusService.isMutualFriend(currentUid, widget.viewedUid);
     _messagePager = TiniChatMessagePager(
       query: FirebaseFirestore.instance
@@ -841,7 +842,7 @@ class _ChatScreenState extends State<ChatScreen> {
     for (var offset = 0; offset < newFriendIds.length; offset += 20) {
       final last = offset + 20 < newFriendIds.length ? offset + 20 : newFriendIds.length;
       final batch = newFriendIds.sublist(offset, last);
-      final snapshot = await firestore.collection('users')
+      final snapshot = await firestore.collection('public_profiles')
           .where(FieldPath.documentId, whereIn: batch).get();
       for (final user in snapshot.docs) {
         final data = user.data();
@@ -858,7 +859,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<List<Map<String, String>>> _searchForwardRecipients(String search) async {
     final value = search.trim();
     if (value.length < 3) return [];
-    final snapshot = await FirebaseFirestore.instance.collection('users')
+    final snapshot = await FirebaseFirestore.instance.collection('public_profiles')
         .where('username', isGreaterThanOrEqualTo: value)
         .where('username', isLessThanOrEqualTo: '$value')
         .limit(20).get();

@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:math';
 import 'audience_access.dart';
 import 'package:flutter/material.dart';
@@ -104,7 +105,7 @@ class _PeopleYouMayKnowCarouselState extends State<PeopleYouMayKnowCarousel> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid!= null) {
       try {
-        final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+        final doc = await UserDocuments.readable(FirebaseFirestore.instance, uid).get();
         if (doc.data()?['notificationSettings']?['people_you_may_know_2'] is bool) {
           localVal = doc.data()!['notificationSettings']['people_you_may_know_2'];
         }
@@ -127,9 +128,7 @@ class _PeopleYouMayKnowCarouselState extends State<PeopleYouMayKnowCarousel> {
     final docs = await Future.wait(
       ids.map((id) async {
         try {
-          return await FirebaseFirestore.instance
-             .collection('users')
-             .doc(id)
+          return await UserDocuments.readable(FirebaseFirestore.instance, id)
              .get();
         } catch (_) {
           return null;
@@ -156,7 +155,7 @@ class _PeopleYouMayKnowCarouselState extends State<PeopleYouMayKnowCarousel> {
     final hiddenSnap = await FirebaseFirestore.instance.collection('users').doc(myUid).collection('hiddenSuggestions').get();
     final hiddenIds = hiddenSnap.docs.map((d) => d.id).toSet();
     // [HARD BLOCK - مركزي Set]
-    final userDoc = await FirebaseFirestore.instance.collection('users').doc(myUid).get();
+    final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, myUid).get();
     final List blockedFromField = userDoc.data()?['blockedUsers']?? userDoc.data()?['blocked']?? [];
     final blockedIds = blockedFromField.map((e) => e.toString()).toSet();
     final myFollowingSnap = await FirebaseFirestore.instance.collection('users').doc(myUid).collection('following').get();
@@ -191,7 +190,7 @@ class _PeopleYouMayKnowCarouselState extends State<PeopleYouMayKnowCarousel> {
     }
     List<Map<String, dynamic>> users = [];
     if (baseScore.isEmpty) {
-      final snap = await FirebaseFirestore.instance.collection('users').get();
+      final snap = await FirebaseFirestore.instance.collection('public_profiles').get();
       users = snap.docs.where((d) => d.id!= myUid &&!myFollowingIds.contains(d.id) &&!hiddenIds.contains(d.id) &&!blockedIds.contains(d.id)).map((d) => {'uid': d.id,...d.data() as Map<String, dynamic>}).toList();
     } else {
       final candidateIds = baseScore.keys.toList()..sort((a, b) => baseScore[b]!.compareTo(baseScore[a]!));
