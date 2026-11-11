@@ -382,6 +382,43 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
   );
 
   Widget _buildBidSection(CrownProvider crown) {
+    if (crown.needsPendingBidCheck) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            crown.hasPendingBid
+                ? 'تحقق من نتيجة المزايدة السابقة قبل تقديم مزايدة جديدة'
+                : crown.isRestoringPendingBid
+                    ? 'جاري استعادة الطلب السابق'
+                    : 'تعذر التحقق من الطلب المحفوظ؛ أعد المحاولة',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.greyText, fontSize: 12),
+          ),
+          TextButton.icon(
+            onPressed: crown.isLoading || crown.isRestoringPendingBid
+                ? null
+                : () async {
+                    final success = await crown.retryPendingBid();
+                    if (!context.mounted) return;
+                    if (success) bidController.clear();
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(success
+                          ? 'تم تأكيد نتيجة المزايدة السابقة'
+                          : crown.lastError ?? 'لم تتأكد النتيجة بعد؛ أعد المحاولة'),
+                    ));
+                  },
+            icon: crown.isLoading || crown.isRestoringPendingBid
+                ? const SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+            label: const Text('التحقق من نتيجة المزايدة'),
+          ),
+        ],
+      );
+    }
     if (crown.isThroneLocked) {
       return Container(
         width: double.infinity,
