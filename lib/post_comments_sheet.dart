@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -168,7 +169,7 @@ class _PostCommentsSheetState extends State<PostCommentsSheet> {
     if (_userBadgesCache.containsKey(uid)) return _userBadgesCache[uid]!;
 
     try {
-      final doc = await _firestore.collection('users').doc(uid).get();
+      final doc = await UserDocuments.readable(_firestore, uid).get();
       if (!doc.exists) return {};
 
       final data = doc.data()!;
@@ -302,7 +303,7 @@ class _PostCommentsSheetState extends State<PostCommentsSheet> {
     }
     for (final uid in verifiedUids) {
       try {
-        final doc = await _firestore.collection('users').doc(uid).get();
+        final doc = await UserDocuments.readable(_firestore, uid).get();
         final fullName = (doc.data()?['fullName'] ?? '').toString().trim();
         if (fullName.isNotEmpty) labels.add(fullName);
       } catch (_) { /* لا يؤثر تعذّر جلب الاسم على إرسال التعليق. */ }
@@ -351,7 +352,7 @@ class _PostCommentsSheetState extends State<PostCommentsSheet> {
     final currentUid = FirebaseAuth.instance.currentUser?.uid?? "";
     if (currentUid.isEmpty || currentUid == toUid) return;
     try {
-      final userDoc = await _firestore.collection('users').doc(currentUid).get();
+      final userDoc = await UserDocuments.readable(_firestore, currentUid).get();
       final userName = userDoc.data()?['fullName']?? userDoc.data()?['username']?? 'مستخدم';
       final docId = '${widget.postId}_${uniqueId}_${toUid}_$type';
       await _firestore.collection('activities').doc(docId).set({
@@ -417,7 +418,7 @@ class _PostCommentsSheetState extends State<PostCommentsSheet> {
       // [Tini - Mention Color]: تجهيز مواضع الذكر المؤكَّد دون تغيير نص التعليق.
       final mentionRanges = await _confirmedMentionRanges(commentText, validCommentMentions);
       // جيب شارة المستخدم الحالي
-      final userDoc = await _firestore.collection('users').doc(auth.uid).get();
+      final userDoc = await UserDocuments.readable(_firestore, auth.uid).get();
       final userBadge = userDoc.data()?['badge'];
       final userBadgeEndsAt = userDoc.data()?['badgeEndsAt'];
 

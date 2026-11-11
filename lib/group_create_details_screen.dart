@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -48,7 +49,7 @@ class _GroupCreateDetailsScreenState extends State<GroupCreateDetailsScreen> {
     }
     for (var doc in snap.docs) {
       if (existingMembers.contains(doc.id)) continue;
-      final userDoc = await FirebaseFirestore.instance.collection('users').doc(doc.id).get();
+      final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, doc.id).get();
       if (!userDoc.exists) continue;
       final data = userDoc.data()!;
       data['uid'] = doc.id;

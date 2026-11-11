@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:iconsax/iconsax.dart';
@@ -49,7 +50,7 @@ class _ShareProfileSheetState extends State<ShareProfileSheet> {
     final List<UserModel> result = [];
     for (var i = 0; i < userIds.length; i += 10) {
       final chunk = userIds.sublist(i, i + 10 > userIds.length ? userIds.length : i + 10);
-      final query = await FirebaseFirestore.instance.collection('users').where(FieldPath.documentId, whereIn: chunk).get();
+      final query = await FirebaseFirestore.instance.collection('public_profiles').where(FieldPath.documentId, whereIn: chunk).get();
       result.addAll(query.docs.map((doc) {
         final data = doc.data();
         data['uid'] = doc.id;
@@ -85,7 +86,7 @@ class _ShareProfileSheetState extends State<ShareProfileSheet> {
     late final String targetImg;
     late final String targetUsername;
     try {
-      final targetUserDoc = await FirebaseFirestore.instance.collection('users').doc(targetProfileId).get();
+      final targetUserDoc = await UserDocuments.readable(FirebaseFirestore.instance, targetProfileId).get();
       final targetData = targetUserDoc.data() ?? <String, dynamic>{};
       targetName = (targetData['fullName'] ?? authProvider.fullName).toString();
       targetImg = (targetData['profileImg'] ?? authProvider.profileImg).toString();

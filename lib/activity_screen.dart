@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -79,7 +80,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
     // [FIX] اذا اشعار رسالة افتح الشات
   if (type == 'message' || type == 'chat') {
     if (fromUid != null && fromUid.toString().isNotEmpty) {
-      final userDoc = await FirebaseFirestore.instance.collection('users').doc(fromUid).get();
+      final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, fromUid).get();
       final u = userDoc.data() ?? {};
       final fullName = u['fullName'] ?? u['username'] ?? 'مستخدم';
       final profileImg = u['profileImg'] ?? '';
@@ -443,7 +444,7 @@ class _ActivityTile extends StatelessWidget {
     final ts = (data['timestamp'] as Timestamp?)?.toDate();
 
     return FutureBuilder<DocumentSnapshot>(
-      future: FirebaseFirestore.instance.collection('users').doc(fromUid).get(),
+      future: UserDocuments.readable(FirebaseFirestore.instance, fromUid).get(),
       builder: (context, userSnap) {
         String name = 'مستخدم';
         String? photoUrl;

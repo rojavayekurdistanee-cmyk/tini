@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -59,7 +60,7 @@ class _FollowListScreenState extends State<FollowListScreen> with SingleTickerPr
 
   Future<String> _getOwnerPrivacy() async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('users').doc(widget.userId).get();
+      final doc = await UserDocuments.readable(FirebaseFirestore.instance, widget.userId).get();
       return doc.data()?['whoCanSeeFollowingList'] ?? 'follow_list_public';
     } catch (_) {
       return 'follow_list_public';
@@ -69,7 +70,7 @@ class _FollowListScreenState extends State<FollowListScreen> with SingleTickerPr
   Future<List<Map<String, dynamic>>> _fetchUsersByIds(List<String> ids) async {
     if (ids.isEmpty) return [];
     final docs = await Future.wait(
-      ids.map((id) => FirebaseFirestore.instance.collection('users').doc(id).get()),
+      ids.map((id) => UserDocuments.readable(FirebaseFirestore.instance, id).get()),
     );
     return docs.where((d) => d.exists).map((d) => {'uid': d.id,...d.data() as Map<String, dynamic>}).toList();
   }
@@ -145,7 +146,7 @@ class _FollowListScreenState extends State<FollowListScreen> with SingleTickerPr
           // إذا ما بتتابع حدا، رجع عينة عشوائية مفلترة
           if (myFollowingIds.isEmpty) {
             final snap = await FirebaseFirestore.instance
-       .collection('users')
+       .collection('public_profiles')
        .where('profileImg', isNotEqualTo: '')
        .limit(30)
        .get();
@@ -414,7 +415,7 @@ class _FollowListScreenState extends State<FollowListScreen> with SingleTickerPr
                                                 builder: (context, friendSnap) {
                                                   if (friendSnap.data!= true) return const SizedBox.shrink();
                                                   return StreamBuilder<DocumentSnapshot>(
-                                                    stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+                                                    stream: UserDocuments.readable(FirebaseFirestore.instance, uid).snapshots(),
                                                     builder: (context, userSnap) {
                                                       if (!userSnap.hasData ||!userSnap.data!.exists) return const SizedBox.shrink();
                                                       final liveUserData = userSnap.data!.data() as Map<String, dynamic>;
@@ -422,7 +423,7 @@ class _FollowListScreenState extends State<FollowListScreen> with SingleTickerPr
                                                       final bool isOnline = liveUserData['isOnline']?? false;
                                                       final Timestamp? lastSeen = liveUserData['lastSeen'] as Timestamp?;
                                                       return StreamBuilder<DocumentSnapshot>(
-                                                        stream: FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser!.uid).snapshots(),
+                                                        stream: UserDocuments.readable(FirebaseFirestore.instance, FirebaseAuth.instance.currentUser!.uid).snapshots(),
                                                         builder: (context, mySnap) {
                                                           final myData = mySnap.data?.data() as Map<String, dynamic>?;
                                                           final bool myShow = myData?['showActivityStatus']?? true;
@@ -511,7 +512,7 @@ FutureBuilder<bool>(
     
     // هون التعديل المهم: StreamBuilder على وثيقة اليوزر نفسه
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+      stream: UserDocuments.readable(FirebaseFirestore.instance, uid).snapshots(),
       builder: (context, userSnap) {
         if (!userSnap.hasData || !userSnap.data!.exists) return const SizedBox.shrink();
         
@@ -522,7 +523,7 @@ FutureBuilder<bool>(
         
         // StreamBuilder على وثيقتك انت عشان زر النشاط
         return StreamBuilder<DocumentSnapshot>(
-          stream: FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser!.uid).snapshots(),
+          stream: UserDocuments.readable(FirebaseFirestore.instance, FirebaseAuth.instance.currentUser!.uid).snapshots(),
           builder: (context, mySnap) {
             final myData = mySnap.data?.data() as Map<String, dynamic>?;
             final bool myShow = myData?['showActivityStatus'] ?? true;

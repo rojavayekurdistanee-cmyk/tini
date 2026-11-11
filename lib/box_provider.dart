@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'audience_access.dart';
 import 'dart:math';
@@ -81,9 +82,7 @@ class BoxProvider extends ChangeNotifier {
       _refreshBoxes();
       if (user != null) {
         final uid = user.uid;
-        _userPointsSub = _firestore
-            .collection('users')
-            .doc(uid)
+        _userPointsSub = UserDocuments.readable(_firestore, uid)
             .snapshots()
             .listen((doc) {
               if (doc.exists && !_isDisposed && _auth.currentUser?.uid == uid) {
@@ -107,7 +106,7 @@ class BoxProvider extends ChangeNotifier {
     bool isAdmin = false;
     if (userId != null) {
       try {
-        final userDoc = await _firestore.collection('users').doc(userId).get();
+        final userDoc = await UserDocuments.readable(_firestore, userId).get();
         isAdmin = userDoc.data()?['isAdmin'] ?? false;
       } catch (_) {}
     }

@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 // [Tini] ملف post_publish_screen.dart - نسخة "نظام الهاشتاجات الذكي والتركيز الكامل"
 import 'dart:io';
 import 'dart:async';
@@ -85,7 +86,7 @@ Future<void> _tiniLogPublishMention(String toUsername, String postId) async {
   try {
     final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     if (currentUid.isEmpty) return;
-    final query = await FirebaseFirestore.instance.collection('users')
+    final query = await FirebaseFirestore.instance.collection('public_profiles')
         .where('username_lowercase', isEqualTo: toUsername.toLowerCase())
         .limit(1).get();
     if (query.docs.isEmpty) return;
@@ -93,8 +94,7 @@ Future<void> _tiniLogPublishMention(String toUsername, String postId) async {
     if (toUid == currentUid) return;
     if (!await MentionPrivacyService.canMentionUser(
         targetUid: toUid, senderUid: currentUid)) return;
-    final userDoc = await FirebaseFirestore.instance.collection('users')
-        .doc(currentUid).get();
+    final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, currentUid).get();
     final userName = userDoc.data()?['fullName'] ??
         userDoc.data()?['username'] ?? 'مستخدم';
     await FirebaseFirestore.instance.collection('activities').add({

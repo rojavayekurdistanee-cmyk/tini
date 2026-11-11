@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'audience_message_gate.dart';
@@ -57,7 +58,7 @@ class _ShareStorySheetState extends State<ShareStorySheet> {
 
     // ✅ جيب كل اليوزرز مرة وحدة بدل FutureBuilder
     final users = await Future.wait(
-      mutualIds.map((id) => FirebaseFirestore.instance.collection('users').doc(id).get())
+      mutualIds.map((id) => UserDocuments.readable(FirebaseFirestore.instance, id).get())
     );
 
     if (!mounted || FirebaseAuth.instance.currentUser?.uid != widget.currentUid) return;

@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -35,9 +36,7 @@ class _FirebaseAudienceBackend implements AudienceBackend {
         verified: !doc.metadata.isFromCache && !doc.metadata.hasPendingWrites,
       );
   @override
-  Stream<AudienceDocument> watchUser(String uid) => store
-      .collection('users')
-      .doc(uid)
+  Stream<AudienceDocument> watchUser(String uid) => UserDocuments.readable(store, uid)
       .snapshots(includeMetadataChanges: true)
       .map(_document);
   @override
@@ -48,9 +47,7 @@ class _FirebaseAudienceBackend implements AudienceBackend {
       .map(_document);
   @override
   Future<AudienceDocument> readUser(String uid) async => _document(
-    await store
-        .collection('users')
-        .doc(uid)
+    await UserDocuments.readable(store, uid)
         .get(const GetOptions(source: Source.server)),
   );
   @override

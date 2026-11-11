@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -47,7 +48,7 @@ class BlockService {
     if (confirm!= true) return false;
 
     try {
-      final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetUid).get();
+      final targetDoc = await UserDocuments.readable(FirebaseFirestore.instance, targetUid).get();
       final targetData = targetDoc.data()?? {};
 
       final String fullName = targetData['fullName']?? targetData['username']?? 'مستخدم';
@@ -180,13 +181,10 @@ class BlockService {
     final myUid = FirebaseAuth.instance.currentUser?.uid?? '';
     if (myUid.isEmpty || targetUid.isEmpty) return false;
     try {
-      final myDoc = await FirebaseFirestore.instance.collection('users').doc(myUid).get();
+      final myDoc = await UserDocuments.readable(FirebaseFirestore.instance, myUid).get();
       final List myBlocked = myDoc.data()?['blockedUsers']?? myDoc.data()?['blocked']?? [];
       if (myBlocked.contains(targetUid)) return true;
-      final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetUid).get();
-      final List targetBlocked = targetDoc.data()?['blockedUsers']?? targetDoc.data()?['blocked']?? [];
-      if (targetBlocked.contains(myUid)) return true;
-      return false;
+      return isBlockedByOther(targetUid);
     } catch (_) {
       return false;
     }
@@ -197,9 +195,10 @@ class BlockService {
     final myUid = FirebaseAuth.instance.currentUser?.uid?? '';
     if (myUid.isEmpty) return false;
     try {
-      final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetUid).get();
-      final List targetBlocked = targetDoc.data()?['blockedUsers']?? targetDoc.data()?['blocked']?? [];
-      return targetBlocked.contains(myUid);
+      final reverse = await FirebaseFirestore.instance
+          .collection('users').doc(myUid)
+          .collection('blockedBy').doc(targetUid).get();
+      return reverse.exists;
     } catch (_) {
       return false;
     }

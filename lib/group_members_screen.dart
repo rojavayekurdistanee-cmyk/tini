@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -397,7 +398,7 @@ class _GroupMembersScreenState extends State<GroupMembersScreen> {
                 ),
                 // كارد الحالي - أنت - مصلح
                 FutureBuilder<DocumentSnapshot>(
-                  future: FirebaseFirestore.instance.collection('users').doc(myUid).get(),
+                  future: UserDocuments.readable(FirebaseFirestore.instance, myUid).get(),
                   builder: (c, snap) {
                     if (!snap.hasData) return SizedBox();
                     final u = snap.data!.data() as Map<String, dynamic>?;
@@ -417,7 +418,7 @@ class _GroupMembersScreenState extends State<GroupMembersScreen> {
                 // لستة الأعضاء
          ...members.where((id) => id!= myUid).map((mId) {
                   return FutureBuilder<DocumentSnapshot>(
-                    future: FirebaseFirestore.instance.collection('users').doc(mId).get(),
+                    future: UserDocuments.readable(FirebaseFirestore.instance, mId).get(),
                     builder: (c, uSnap) {
                       if (!uSnap.hasData) return SizedBox();
                       final u = uSnap.data!.data() as Map<String, dynamic>?;

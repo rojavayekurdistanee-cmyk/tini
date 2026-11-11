@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
 import 'dart:ui';
@@ -212,12 +213,12 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
 
     try {
       // 1. افحص اذا انت مطفي الزر - اذا مطفي لا تسجل زيارتك عند حدا
-      final myDoc = await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+      final myDoc = await UserDocuments.readable(FirebaseFirestore.instance, currentUser.uid).get();
       final myEnabled = (myDoc.data()?['isVisitsEnabled']?? true) as bool;
       if (!myEnabled) return;
 
       // 2. افحص اذا هو مطفي الزر - اذا مطفي لا تسجل عندو
-      final ownerDoc = await FirebaseFirestore.instance.collection('users').doc(profileOwnerId).get();
+      final ownerDoc = await UserDocuments.readable(FirebaseFirestore.instance, profileOwnerId).get();
       final ownerEnabled = (ownerDoc.data()?['isVisitsEnabled']?? true) as bool;
       if (!ownerEnabled) return;
 
@@ -279,8 +280,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
         _syncProfileTabAccess();
       } else {
         // افحص خصوصية الحساب لحظياً قبل إنشاء أي استعلام عن إعجاباته أو مفضلته.
-        _profilePrivacySub = FirebaseFirestore.instance
-            .collection('users').doc(viewedUid).snapshots().listen((snapshot) {
+        _profilePrivacySub = UserDocuments.readable(FirebaseFirestore.instance, viewedUid).snapshots().listen((snapshot) {
           if (!mounted) return;
           final data = snapshot.data();
           _liveProfilePrivacy = data;
@@ -763,8 +763,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
         // [Tini: Phase 3 - البروفايل - الحظر الكامل - مركزي - Two Way]
         final blockedSet = auth.blockedUsersSet.isNotEmpty? auth.blockedUsersSet : auth.blockedUsers.toSet();
         final bool iBlockedHim = blockedSet.contains(viewedUid) || auth.isBlocked(viewedUid);
-        final List targetBlockedList = viewedUserData?['blockedUsers']?? viewedUserData?['blocked']?? [];
-        final bool heBlockedMe = targetBlockedList.contains(auth.uid) || (viewedUserData?['blockedBy']!= null && (viewedUserData?['blockedBy'] as List).contains(auth.uid));
+        final bool heBlockedMe = auth.blockedBySet.contains(viewedUid);
         if (!isOwnProfile && (iBlockedHim || heBlockedMe)) {
           return Scaffold(
             backgroundColor: bgColor,
@@ -1397,7 +1396,7 @@ if (!isOwnProfile)
         // [حالة النشاط] عرض نشط الآن / آخر ظهور
                 if (!isOwn)
   StreamBuilder<DocumentSnapshot>(
-    stream: FirebaseFirestore.instance.collection('users').doc(viewedUid).snapshots(),
+    stream: UserDocuments.readable(FirebaseFirestore.instance, viewedUid).snapshots(),
     builder: (context, targetSnap) {
       if (!targetSnap.hasData ||!targetSnap.data!.exists) return const SizedBox.shrink();
       final targetData = targetSnap.data!.data() as Map<String, dynamic>;
@@ -1411,7 +1410,7 @@ if (!isOwnProfile)
       }
 
       return StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser!.uid).snapshots(),
+        stream: UserDocuments.readable(FirebaseFirestore.instance, FirebaseAuth.instance.currentUser!.uid).snapshots(),
         builder: (context, mySnap) {
           final myData = mySnap.data?.data() as Map<String, dynamic>?;
           final bool myShow = myData?['showActivityStatus']?? true;
@@ -1547,7 +1546,7 @@ Widget _buildLikedVideosTab(String uid, {Map<String, dynamic>? viewedUserData, b
     return _buildTitiGridWrapper(uid, 'likes', viewedUserData: viewedUserData, isOwn: true, followingStatus: followingStatus);
   }
   return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-    stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+    stream: UserDocuments.readable(FirebaseFirestore.instance, uid).snapshots(),
     builder: (context, snapshot) {
       if (!snapshot.hasData) {
         if (snapshot.hasError) {

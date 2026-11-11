@@ -1358,3 +1358,6 @@ exports.cleanupExpiredViewOnce = onSchedule({
     console.log(`[ViewOnce] Expired ${deleted} view-once media`);
     return null;
 });
+
+// Public allowlisted profiles; full users documents remain owner-only.
+Object.assign(exports, require('./public_profiles'));

@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -83,9 +84,7 @@ class _VisitsDoorButtonState extends State<VisitsDoorButton>
     for (final id in currentIds) {
       _visitorStreams.putIfAbsent(
         id,
-        () => FirebaseFirestore.instance
-            .collection('users')
-            .doc(id)
+        () => UserDocuments.readable(FirebaseFirestore.instance, id)
             .snapshots(),
       );
     }

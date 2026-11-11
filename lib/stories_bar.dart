@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'audience_access.dart';
 import 'audience_gate.dart';
@@ -51,7 +52,7 @@ class StoriesBar extends StatelessWidget {
       final usersWithMeta = await Future.wait(
         followingIds.map((id) async {
           try {
-            final userDoc = await FirebaseFirestore.instance.collection('users').doc(id).get();
+            final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, id).get();
             if (!userDoc.exists) return null;
 
             final storySnap = await FirebaseFirestore.instance
@@ -82,7 +83,7 @@ class StoriesBar extends StatelessWidget {
             };
           } catch (_) {
             // تعديل: لو فشل جلب الستوري، رجّع المستخدم عادي بدل ما نحذفه
-            final userDoc = await FirebaseFirestore.instance.collection('users').doc(id).get();
+            final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, id).get();
             if (!userDoc.exists) return null;
             return {
               'uid': id,

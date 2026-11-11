@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -34,7 +35,7 @@ class _VisitsScreenState extends State<VisitsScreen> {
 
   Future<void> _markAllAsSeen() async {
     if (myId.isEmpty) return;
-    final myDoc = await FirebaseFirestore.instance.collection('users').doc(myId).get();
+    final myDoc = await UserDocuments.readable(FirebaseFirestore.instance, myId).get();
     final isEnabled = (myDoc.data()?['isVisitsEnabled'] ?? true) as bool;
     if (!isEnabled) return;
 
@@ -236,7 +237,7 @@ class _VisitsScreenState extends State<VisitsScreen> {
         title: const Text("من زار بروفايلك", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
         actions: [
           StreamBuilder<DocumentSnapshot>(
-            stream: FirebaseFirestore.instance.collection('users').doc(myId).snapshots(),
+            stream: UserDocuments.readable(FirebaseFirestore.instance, myId).snapshots(),
             builder: (context, snap) {
               final isEnabled = (snap.data?.data() as Map<String, dynamic>?)?['isVisitsEnabled'] ?? true;
               return Row(
@@ -264,7 +265,7 @@ class _VisitsScreenState extends State<VisitsScreen> {
         ],
       ),
       body: StreamBuilder<DocumentSnapshot>(
-        stream: FirebaseFirestore.instance.collection('users').doc(myId).snapshots(),
+        stream: UserDocuments.readable(FirebaseFirestore.instance, myId).snapshots(),
         builder: (context, mySnap) {
           if (!mySnap.hasData) {
             return const Center(child: CircularProgressIndicator(color: Colors.teal));
@@ -353,7 +354,7 @@ class _VisitsScreenState extends State<VisitsScreen> {
                   final ts = data['timestamp'] as Timestamp?;
 
                   return FutureBuilder<DocumentSnapshot>(
-                    future: FirebaseFirestore.instance.collection('users').doc(visitorId).get(),
+                    future: UserDocuments.readable(FirebaseFirestore.instance, visitorId).get(),
                     builder: (context, userSnap) {
                       if (!userSnap.hasData) return const SizedBox();
                       if (!userSnap.data!.exists) return const SizedBox();

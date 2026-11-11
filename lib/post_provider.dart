@@ -1,3 +1,4 @@
+import 'user_documents.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:math';
@@ -195,7 +196,7 @@ Future<void> _logActivity(String toUid, String type, String text, String postId,
   final currentUid = FirebaseAuth.instance.currentUser?.uid ?? "";
   if (currentUid.isEmpty || currentUid == toUid) return;
   try {
-    final userDoc = await _firestore.collection('users').doc(currentUid).get();
+    final userDoc = await UserDocuments.readable(_firestore, currentUid).get();
     final userName = userDoc.data()?['fullName'] ?? userDoc.data()?['username'] ?? 'مستخدم';
     
     // لو تعليق، خلي الـ ID فريد لكل تعليق
@@ -229,7 +230,7 @@ Future<Map<String, dynamic>> getUserBadge(String uid) async {
   if (_userBadgesCache.containsKey(uid)) return _userBadgesCache[uid]!;
 
   try {
-    final doc = await _firestore.collection('users').doc(uid).get();
+    final doc = await UserDocuments.readable(_firestore, uid).get();
     if (!doc.exists) return {};
 
     final data = doc.data()!;
@@ -545,7 +546,7 @@ Future<String?> uploadPost({
                         // جلب صورة البروفايل الفريش من السيرفر مشان ما ينحفظ قديم
             String freshProfileImg = profileImg;
             try {
-              final freshUserDoc = await FirebaseFirestore.instance.collection('users').doc(uid).get(const GetOptions(source: Source.server));
+              final freshUserDoc = await UserDocuments.readable(FirebaseFirestore.instance, uid).get(const GetOptions(source: Source.server));
               if (freshUserDoc.exists) {
                 freshProfileImg = freshUserDoc.data()?['profileImg'] ?? profileImg;
               }
