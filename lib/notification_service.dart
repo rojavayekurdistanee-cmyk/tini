@@ -1,3 +1,4 @@
+import 'banner_manager.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -111,6 +112,10 @@ class NotificationService {
     });
 
     FirebaseMessaging.onMessage.listen((message) async {
+      // Firestore owns in-app social presentation. Keep messages and every other
+      // notification on their existing path, including background delivery.
+      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
+          await BannerManager.instance.handleForegroundActivity(message.data)) { return; }
       await _showNotification(message, androidChannel);
     });
 
