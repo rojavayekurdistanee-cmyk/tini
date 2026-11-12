@@ -173,4 +173,31 @@ void main() {
       expect(manager.policy.pending.values.single.eventIds.length, 1);
     },
   );
+  test(
+    'live group update never exposes an actor whose gate is still pending',
+    () async {
+      await manager.bindUser('a');
+      final now = DateTime.now();
+      manager.submit(
+        BannerEvent('one', BannerType.follow, {
+          'uid': 'one',
+          'name': 'one',
+        }, now),
+      );
+      manager.policy.tick(now.add(const Duration(seconds: 6)));
+      manager.currentBanner.value = manager.policy.current;
+      manager.readyToPresent = (item) => item.actors.length == 1;
+      try {
+        manager.submit(
+          BannerEvent('two', BannerType.follow, {
+            'uid': 'two',
+            'name': 'two',
+          }, now),
+        );
+        expect(manager.currentBanner.value!.actors.length, 1);
+      } finally {
+        manager.readyToPresent = null;
+      }
+    },
+  );
 }

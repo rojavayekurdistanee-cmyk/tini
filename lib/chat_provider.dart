@@ -1,3 +1,4 @@
+import 'banner_event_cursor.dart';
 import 'audience_access.dart';
 import 'user_documents.dart';
 import 'dart:async';
@@ -263,6 +264,8 @@ class ChatProvider extends ChangeNotifier {
   StreamSubscription? _bannerAuthSub;
   bool _disposed = false;
   int _bannerGeneration = 0;
+  bool _bannerReady = false;
+  DateTime? _bannerSessionStartedAt;
   Future<void> _bannerWork = Future.value();
   final Map<String, Map<String, dynamic>> _bannerUsers = {};
   final Map<String, DateTime> _bannerUserFetchedAt = {};
@@ -282,8 +285,15 @@ class ChatProvider extends ChangeNotifier {
     if (!_sessionIs(uid, generation)) return;
     final at = data['timestamp'];
     final actor = (data['fromUid'] ?? data['visitorId'])?.toString() ?? '';
-    if (at is! Timestamp || actor.isEmpty || actor == uid || isBlocked(actor) ||
-        DateTime.now().difference(at.toDate()) > BannerPolicy.expiry || !_bannerManager.enabled(type)) { return; }
+    if (at is! Timestamp) {
+      debugPrint('[Banner] skipped type=${type.name} reason=missing_server_timestamp');
+      return;
+    }
+    if (actor.isEmpty || actor == uid || isBlocked(actor) || !_bannerManager.enabled(type)) return;
+    if (DateTime.now().difference(at.toDate()) > BannerPolicy.expiry) {
+      debugPrint('[Banner] skipped type=${type.name} reason=expired_event');
+      return;
+    }
     // Reuse a short verification window for bursts on the same post.
     final postId = data['postId']?.toString() ?? '';
     if ({BannerType.like, BannerType.comment, BannerType.mention}.contains(type)) {
@@ -302,7 +312,11 @@ class ChatProvider extends ChangeNotifier {
     var user = _bannerUsers[actor];
     if (user == null || DateTime.now().difference(_bannerUserFetchedAt[actor]!) > const Duration(minutes: 5)) {
       final doc = await UserDocuments.readable(_firestore, actor).get();
-      if (!_sessionIs(uid, generation) || !doc.exists) return;
+      if (!_sessionIs(uid, generation)) return;
+      if (!doc.exists) {
+        debugPrint('[Banner] skipped type=${type.name} reason=missing_public_profile');
+        return;
+      }
       user = doc.data()!;
       if (_bannerUsers.length >= 100) {
         final oldest = _bannerUsers.keys.first;
@@ -320,9 +334,9 @@ class ChatProvider extends ChangeNotifier {
 
   void startActivitiesListener() {
     final uid = _auth.currentUser?.uid;
-    if (_disposed || uid == null || _currentUid != uid || _activitiesSub != null) return;
+    if (_disposed || uid == null || _currentUid != uid || !_bannerReady || _activitiesSub != null) return;
     final generation = _bannerGeneration;
-    final baseline = <String>{};
+    final cursor = BannerEventCursor(_bannerSessionStartedAt ?? DateTime.now());
     var initialized = false;
     _activitiesSub = _firestore.collection('activities')
       .where('toUid', isEqualTo: uid).where('seen', isEqualTo: false)
@@ -337,21 +351,17 @@ class ChatProvider extends ChangeNotifier {
           'postId': snapshot.docs.first.data()['postId'],
         };
         notifyListeners();
-        // Establish a server baseline, including cached records, before presenting.
-        if (!initialized) {
-          baseline.addAll(snapshot.docs.map((d) => d.id));
-          if (!snapshot.metadata.isFromCache && !snapshot.metadata.hasPendingWrites) initialized = true;
-          return;
-        }
-        for (final change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.removed) continue;
-          final doc = change.doc;
-          if (doc.metadata.hasPendingWrites || baseline.contains(doc.id)) continue;
+        if (snapshot.metadata.isFromCache) return;
+        final firstServerSnapshot = !initialized;
+        final candidates = firstServerSnapshot ? snapshot.docs : snapshot.docChanges
+          .where((change) => change.type != DocumentChangeType.removed).map((change) => change.doc);
+        if (!snapshot.metadata.hasPendingWrites) initialized = true;
+        for (final doc in candidates) {
           final data = doc.data();
-          if (data == null || data['timestamp'] is! Timestamp) continue;
-          baseline.add(doc.id);
-          // Bound listener-local deduplication; persistent policy handles reconnects.
-          if (baseline.length > 3000) baseline.remove(baseline.first);
+          final at = data?['timestamp'];
+          if (data == null || at is! Timestamp || !cursor.accept(doc.id, at.toDate(),
+              fromCache: doc.metadata.isFromCache, pendingWrites: doc.metadata.hasPendingWrites,
+              firstServerSnapshot: firstServerSnapshot)) { continue; }
           final type = switch (data['type']) {
             'like' => BannerType.like, 'comment' || 'reply' => BannerType.comment,
             'follow' => BannerType.follow, 'mention' => BannerType.mention,
@@ -364,27 +374,28 @@ class ChatProvider extends ChangeNotifier {
 
   void startVisitsListener() {
     final uid = _auth.currentUser?.uid;
-    if (_disposed || uid == null || _currentUid != uid || _visitsSub != null) return;
+    if (_disposed || uid == null || _currentUid != uid || !_bannerReady || _visitsSub != null) return;
     final generation = _bannerGeneration;
-    final versions = <String, int>{};
+    final cursor = BannerEventCursor(_bannerSessionStartedAt ?? DateTime.now());
     var initialized = false;
     _visitsSub = _firestore.collection('users').doc(uid).collection('visits')
       .where('isSeen', isEqualTo: false).orderBy('timestamp', descending: true)
       .snapshots(includeMetadataChanges: true).listen((snapshot) {
         if (!_sessionIs(uid, generation)) return;
-        for (final change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.removed) continue;
-          final doc = change.doc;
+        if (snapshot.metadata.isFromCache) return;
+        final firstServerSnapshot = !initialized;
+        final candidates = firstServerSnapshot ? snapshot.docs : snapshot.docChanges
+          .where((change) => change.type != DocumentChangeType.removed).map((change) => change.doc);
+        if (!snapshot.metadata.hasPendingWrites) initialized = true;
+        for (final doc in candidates) {
           final data = doc.data();
           final at = data?['timestamp'];
-          if (at is! Timestamp || doc.metadata.hasPendingWrites) continue;
+          if (data == null || at is! Timestamp || !cursor.accept(doc.id, at.toDate(),
+              fromCache: doc.metadata.isFromCache, pendingWrites: doc.metadata.hasPendingWrites,
+              firstServerSnapshot: firstServerSnapshot)) { continue; }
           final version = at.microsecondsSinceEpoch;
-          final previous = versions[doc.id];
-          versions[doc.id] = version;
-          if (!initialized || previous == version) continue;
-          if (versions.length > 3000) versions.remove(versions.keys.first);
           _queueBannerWork(() => _submitBanner(uid, generation,
-            'visit:${doc.id}:$version', BannerType.visit, data!));
+            'visit:${doc.id}:$version', BannerType.visit, data));
         }
         if (!snapshot.metadata.isFromCache && !snapshot.metadata.hasPendingWrites) initialized = true;
       }, onError: (Object e) => debugPrint('Visits listener: $e'));
@@ -431,6 +442,8 @@ class ChatProvider extends ChangeNotifier {
       final uid = user?.uid;
       if (_disposed || (uid == _currentUid && uid != null)) return;
       final generation = ++_bannerGeneration;
+      _bannerReady = false;
+      _bannerSessionStartedAt = DateTime.now();
       _currentUid = uid;
       _bannerWork = Future.value();
       _followersSub?.cancel(); _followersSub = null;
@@ -449,6 +462,8 @@ class ChatProvider extends ChangeNotifier {
       if (uid == null || !_sessionIs(uid, generation)) return;
       await loadBlockedIds();
       if (!_sessionIs(uid, generation)) return;
+      _bannerReady = true;
+      debugPrint('[Banner] session_ready');
       _bannerManager.foregroundActivity = (payload) async {
         if (!_sessionIs(uid, generation)) return false;
         final id = payload['activityId']?.toString() ?? '';

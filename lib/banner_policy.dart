@@ -140,14 +140,19 @@ class BannerPolicy {
     current = null;
   }
 
-  void tick(DateTime now, {bool Function(BannerItem)? eligible}) {
+  void tick(
+    DateTime now, {
+    bool Function(BannerItem)? eligible,
+    bool Function(BannerItem)? readyToPresent,
+  }) {
     prune(now);
     if (!foreground) {
       dismiss(now);
       return;
     }
     if (current != null) {
-      if (eligible != null && !eligible(current!)) {
+      if ((eligible != null && !eligible(current!)) ||
+          (readyToPresent != null && !readyToPresent(current!))) {
         dismiss(now);
       } else if (startedAt != null && now.difference(startedAt!) >= visible) {
         dismiss(now);
@@ -169,8 +174,14 @@ class BannerPolicy {
             return p != 0 ? p : a.createdAt.compareTo(b.createdAt);
           });
     for (final item in ready) {
+      if (eligible != null && !eligible(item)) {
+        pending.remove(item.groupKey);
+        continue;
+      }
+      // Readiness (e.g. a profile gate still loading) is temporary. Do not
+      // consume the group or its presentation cooldown before it can render.
+      if (readyToPresent != null && !readyToPresent(item)) continue;
       pending.remove(item.groupKey);
-      if (eligible != null && !eligible(item)) continue;
       if (item.type == BannerType.activity &&
           _recent('activity', now, const Duration(minutes: 30))) {
         continue;

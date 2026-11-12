@@ -17,6 +17,8 @@ class BannerManager {
   Timer? _persistTimer;
   Future<void> _writes = Future.value();
   bool Function(BannerItem)? canPresent;
+  bool Function(BannerItem)? readyToPresent;
+  DateTime? _lastWaitDiagnostic;
   final Map<Object, String? Function()> _visiblePosts = {};
   void watchVisiblePost(Object owner, String? Function() selected) =>
       _visiblePosts[owner] = selected;
@@ -129,17 +131,44 @@ class BannerManager {
   bool _eligible(BannerItem item) =>
       enabled(item.type) && (canPresent?.call(item) ?? true);
   void _tick() {
-    final previous = policy.current;
-    policy.tick(DateTime.now(), eligible: _eligible);
-    if (!identical(previous, policy.current)) {
+    final now = DateTime.now();
+    policy.tick(now, eligible: _eligible, readyToPresent: readyToPresent);
+    if (policy.current == null &&
+        policy.pending.isNotEmpty &&
+        (_lastWaitDiagnostic == null ||
+            now.difference(_lastWaitDiagnostic!) >=
+                const Duration(seconds: 5))) {
+      _lastWaitDiagnostic = now;
+      debugPrint(
+        '[Banner] waiting groups=${policy.pending.length} foreground=${policy.foreground}',
+      );
+    }
+    if (!identical(currentBanner.value, policy.current)) {
       currentBanner.value = policy.current;
+      debugPrint(
+        '[Banner] ${policy.current == null ? 'hidden' : 'shown type=${policy.current!.type.name}'}',
+      );
       _save();
     }
   }
 
   void submit(BannerEvent event) {
-    if (_uid == null || _prefs == null || !enabled(event.type)) return;
-    if (policy.add(event, DateTime.now())) currentBanner.value = policy.current;
+    if (_uid == null || _prefs == null || !enabled(event.type)) {
+      debugPrint(
+        '[Banner] skipped type=${event.type.name} reason=session_or_setting',
+      );
+      return;
+    }
+    final accepted = policy.add(event, DateTime.now());
+    debugPrint(
+      '[Banner] received type=${event.type.name} accepted=$accepted foreground=${policy.foreground}',
+    );
+    final item = policy.current;
+    if (accepted &&
+        (item == null ||
+            (_eligible(item) && (readyToPresent?.call(item) ?? true)))) {
+      currentBanner.value = item;
+    }
     _save();
   }
 

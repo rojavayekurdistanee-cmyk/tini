@@ -35,23 +35,17 @@ class _GlobalBannerOverlayState extends State<GlobalBannerOverlay>
           WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
     );
     manager.canPresent = _canPresent;
+    manager.readyToPresent = _readyToPresent;
   }
 
   bool _canPresent(BannerItem item) {
-    if (!mounted ||
-        manager.isOpening ||
-        FirebaseAuth.instance.currentUser == null) {
+    if (!mounted || FirebaseAuth.instance.currentUser == null) {
       return false;
     }
     final auth = context.read<custom.AuthProvider>();
     if (item.actors.keys.any(
       (uid) =>
           auth.blockedUsersSet.contains(uid) || auth.blockedBySet.contains(uid),
-    )) {
-      return false;
-    }
-    if (item.actors.keys.any(
-      (uid) => !AudienceAccess.instance.canViewProfile(uid),
     )) {
       return false;
     }
@@ -62,6 +56,13 @@ class _GlobalBannerOverlayState extends State<GlobalBannerOverlay>
     return true;
   }
 
+  bool _readyToPresent(BannerItem item) =>
+      mounted &&
+      !manager.isOpening &&
+      item.actors.keys.every(
+        (uid) => AudienceAccess.instance.canViewProfile(uid),
+      );
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) =>
       manager.setForeground(state == AppLifecycleState.resumed);
@@ -69,6 +70,7 @@ class _GlobalBannerOverlayState extends State<GlobalBannerOverlay>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     manager.canPresent = null;
+    manager.readyToPresent = null;
     super.dispose();
   }
 

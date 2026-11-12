@@ -227,4 +227,35 @@ void main() {
       expect(p.pending, isEmpty);
     },
   );
+  for (final type in [
+    BannerType.follow,
+    BannerType.visit,
+    BannerType.like,
+    BannerType.comment,
+    BannerType.mention,
+    BannerType.story,
+    BannerType.activity,
+  ]) {
+    test(
+      'loading presentation gate defers ${type.name} without consuming group',
+      () {
+        final p = BannerPolicy();
+        p.add(event('new', type: type), origin);
+        p.tick(
+          origin.add(const Duration(seconds: 5)),
+          readyToPresent: (_) => false,
+        );
+        expect(p.current, isNull);
+        expect(p.pending.length, 1);
+        expect(p.starts, isEmpty);
+        expect(p.history.keys.any((key) => key.startsWith('group:')), isFalse);
+        p.tick(
+          origin.add(const Duration(seconds: 8)),
+          readyToPresent: (_) => true,
+        );
+        expect(p.current?.type, type);
+        expect(p.pending, isEmpty);
+      },
+    );
+  }
 }
