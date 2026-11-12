@@ -36,3 +36,41 @@ class BannerTransition extends StatelessWidget {
     );
   }
 }
+
+/// Swipe up to dismiss. No Tooltip/Overlay dependency and no close button.
+/// Both a deliberate slow drag and a short upward flick are supported.
+class BannerDismissGesture extends StatefulWidget {
+  const BannerDismissGesture({
+    super.key,
+    required this.child,
+    required this.onDismiss,
+    this.onTap,
+  });
+  final Widget child;
+  final VoidCallback onDismiss;
+  final VoidCallback? onTap;
+
+  @override
+  State<BannerDismissGesture> createState() => _BannerDismissGestureState();
+}
+
+class _BannerDismissGestureState extends State<BannerDismissGesture> {
+  double _verticalDistance = 0;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: widget.onTap,
+    onVerticalDragStart: (_) => _verticalDistance = 0,
+    onVerticalDragUpdate: (details) =>
+        _verticalDistance += details.primaryDelta ?? 0,
+    onVerticalDragCancel: () => _verticalDistance = 0,
+    onVerticalDragEnd: (details) {
+      final dismiss =
+          _verticalDistance <= -32 || (details.primaryVelocity ?? 0) < -100;
+      _verticalDistance = 0;
+      if (dismiss) widget.onDismiss();
+    },
+    child: widget.child,
+  );
+}

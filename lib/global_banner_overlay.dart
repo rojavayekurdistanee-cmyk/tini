@@ -226,17 +226,8 @@ class _BannerCardState extends State<_BannerCard> {
     };
     return Material(
       type: MaterialType.transparency,
-      child: GestureDetector(
-        onVerticalDragEnd: (details) {
-          if ((details.primaryVelocity ?? 0) < -100) {
-            BannerManager.instance.dismiss();
-          }
-        },
-        onHorizontalDragEnd: (details) {
-          if ((details.primaryVelocity ?? 0).abs() > 100) {
-            BannerManager.instance.dismiss();
-          }
-        },
+      child: BannerDismissGesture(
+        onDismiss: () => BannerManager.instance.dismiss(),
         onTap: _open,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -295,12 +286,6 @@ class _BannerCardState extends State<_BannerCard> {
               ),
               const SizedBox(width: 8),
               Icon(icon, color: Colors.white, size: 20),
-              IconButton(
-                tooltip: 'إغلاق',
-                visualDensity: VisualDensity.compact,
-                onPressed: () => BannerManager.instance.dismiss(),
-                icon: const Icon(Icons.close, color: Colors.white70, size: 18),
-              ),
             ],
           ),
         ),
