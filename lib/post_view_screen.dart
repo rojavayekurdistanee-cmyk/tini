@@ -1,3 +1,4 @@
+import 'banner_manager.dart';
 import 'dart:ui';
 import 'audience_access.dart';
 import 'package:flutter/foundation.dart';
@@ -196,6 +197,11 @@ void initState() {
     initialPage: widget.initialIndex,
   );
   _stablePosts = List.from(widget.posts);
+  BannerManager.instance.watchVisiblePost(this, () {
+    if (!mounted || !widget.isFeedActive || ModalRoute.of(context)?.isCurrent != true ||
+        _currentIndex < 0 || _currentIndex >= _stablePosts.length) { return null; }
+    return _stablePosts[_currentIndex].id;
+  });
   // [TRASH FILTER - ADDITION] - فلترة المحذوفات أولاً
   _stablePosts = _stablePosts.where((doc) {
     final data = doc.data() as Map<String, dynamic>?;
@@ -612,6 +618,7 @@ void initState() {
 
 @override
 void dispose() {
+  BannerManager.instance.unwatchVisiblePost(this);
   _audience.removeListener(_onAudienceChanged);
   _viewTimer?.cancel();
   _pageController.dispose();
