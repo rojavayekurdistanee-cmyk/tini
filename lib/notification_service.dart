@@ -1,4 +1,5 @@
 import 'banner_manager.dart';
+import 'notification_payload.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -39,22 +40,17 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await FirebaseFirestore.instance.collection('chat_rooms').doc(message.data['roomId']).collection('messages').doc(message.data['messageId']).update({'isDelivered': true});
     } catch(e){}
   }
-  // FCM displays notification+data messages in the system tray while
-  // backgrounded. Do not generate a duplicate local push for these three types.
-  final backgroundType = (message.data['type'] ?? '').toString();
-  if (message.notification != null &&
-      const {'like', 'comment', 'follow', 'new_follower', 'new_followers'}
-          .contains(backgroundType)) {
-    return;
-  }
+  // Older deployed notification+data payloads are already displayed by the OS.
+  // New activity pushes are data-only and use the rich local renderer below.
+  if (message.notification != null) return;
 
   final service = NotificationService();
   await service.initForBackground();
 
   final data = message.data;
   final avatarUrl = data['avatar']?? "";
-  final title = data['title']?? "Tini";
-  final body = data['body']?? "";
+  final title = NotificationPayload.text([data['title'], "Tini"]);
+  final body = NotificationPayload.text([data['body']]);
 
   await service.showBackgroundNotification(title, body, avatarUrl, data);
 }
@@ -79,6 +75,36 @@ class NotificationService {
     } catch (_) {
       return false;
     }
+  }
+
+  static Future<void> _presentationQueue = Future<void>.value();
+
+  Future<void> _presentOnce(Map<String, dynamic> data, String? viewer,
+      Future<void> Function(int) show) {
+    final pending = _presentationQueue.then((_) async {
+      if (FirebaseAuth.instance.currentUser?.uid != viewer) return;
+      final event = NotificationPayload.eventKey(data);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final storageKey = 'external_push_events:${viewer ?? "anonymous"}';
+      final shown = prefs.getStringList(storageKey) ?? <String>[];
+      if (event.isNotEmpty && shown.contains(event)) return;
+      final identity = event.isNotEmpty
+          ? '$viewer:$event'
+          : '$viewer:${DateTime.now().microsecondsSinceEpoch}';
+      if (FirebaseAuth.instance.currentUser?.uid != viewer) return;
+      await show(NotificationPayload.notificationId(identity));
+      if (event.isNotEmpty) {
+        shown.add(event);
+        await prefs.setStringList(storageKey,
+            shown.skip(shown.length > 500 ? shown.length - 500 : 0).toList());
+      }
+    });
+    // A failed display may be retried and must not poison later notifications.
+    _presentationQueue = pending.catchError((Object error) {
+      debugPrint('External notification display failed: $error');
+    });
+    return _presentationQueue;
   }
 
   Future<void> init() async {
@@ -121,15 +147,18 @@ class NotificationService {
     });
 
     FirebaseMessaging.onMessage.listen((message) async {
-      // Keep existing in-app banner handling. The three requested social
-      // events must ALSO produce an external notification while Tini is open.
+      // Preserve in-app banners and also show external pushes for all five interactions.
       final type = (message.data['type'] ?? '').toString();
       final requiresExternalPush =
-          const {'like', 'comment', 'follow', 'new_follower', 'new_followers'}
-              .contains(type);
-      final handledByBanner =
-          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
-              await BannerManager.instance.handleForegroundActivity(message.data);
+          NotificationPayload.externalTypes.contains(type);
+      var handledByBanner = false;
+      try {
+        handledByBanner =
+            WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
+                await BannerManager.instance.handleForegroundActivity(message.data);
+      } catch (error) {
+        debugPrint('Foreground activity banner failed: $error');
+      }
       if (handledByBanner && !requiresExternalPush) return;
       await _showNotification(message, androidChannel);
     });
@@ -429,7 +458,13 @@ class NotificationService {
 
   Future<void> initForBackground() async {
     const androidSettings = AndroidInitializationSettings('@drawable/ic_notification');
-    const initSettings = InitializationSettings(android: androidSettings);
+    const initSettings = InitializationSettings(
+      android: androidSettings,
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false, requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
+    );
     await _localNotifications.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: (details) {},
@@ -439,12 +474,16 @@ class NotificationService {
 
     Future<void> showBackgroundNotification(String title, String body, String avatarUrl, Map<String, dynamic> data) async {
     final notificationViewerUid = FirebaseAuth.instance.currentUser?.uid;
+    if (!NotificationPayload.mayPresent(data, notificationViewerUid, body)) return;
     if (!await _mayShowPostNotification(data)) return;
 
         // [Titi Update] - معاينة الرسائل الخاصة (خلفية) + زر following
     final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
     final bool previewEnabled = prefs.getBool('messages_preview') ?? true;
     final String type = (data['type'] ?? "").toString();
+    final interactionKey = NotificationPayload.preferenceKey(type);
+    if (interactionKey != null && prefs.getBool(interactionKey) == false) return;
     // [عرض مرة واحدة - الخاص] منع عرض أو تحميل الوسائط في الإشعارات
     final bool privateViewOnce = (type == 'chat' || type == 'message') &&
         (data['viewOnce'] == true || data['viewOnce']?.toString() == 'true');
@@ -516,6 +555,7 @@ class NotificationService {
 
     FilePathAndroidBitmap? largeIcon;
     BigPictureStyleInformation? bigPictureStyle;
+    String? richImagePath;
 
     final postImageUrl = privateViewOnce ? "" : (data['postImage']?? data['bigPicture']?? data['imageUrl']?? data['mediaUrl']?? data['thumbnailUrl']?? "");
     if (privateViewOnce && previewEnabled) {
@@ -523,23 +563,25 @@ class NotificationService {
     }
 
     if (avatarUrl.isNotEmpty) {
-      final avatarPath = await _createAvatarWithBadge(avatarUrl, DateTime.now().millisecond);
+      final avatarPath = await _createAvatarWithBadge(avatarUrl, DateTime.now().microsecondsSinceEpoch);
       if (avatarPath!= null) {
         largeIcon = FilePathAndroidBitmap(avatarPath);
       }
     } else {
-      final letterPath = await _createLetterAvatar(title, DateTime.now().millisecond);
+      final letterPath = await _createLetterAvatar(title, DateTime.now().microsecondsSinceEpoch);
       if (letterPath!= null) {
         largeIcon = FilePathAndroidBitmap(letterPath);
       }
     }
 
     if (postImageUrl.isNotEmpty) {
-      final bigPicPath = await _downloadImage(postImageUrl, "big_${DateTime.now().millisecond}");
+      final bigPicPath = await _downloadImage(postImageUrl, "big_${DateTime.now().microsecondsSinceEpoch}");
       if (bigPicPath!= null) {
+        richImagePath = bigPicPath;
         bigPictureStyle = BigPictureStyleInformation(
           FilePathAndroidBitmap(bigPicPath),
-          
+          contentTitle: title,
+          summaryText: body,
           largeIcon: largeIcon,
           hideExpandedLargeIcon: true,
         );
@@ -561,8 +603,8 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
     if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
     if (!await _mayShowPostNotification(data)) return;
     if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
-    await _localNotifications.show(
-      id: data['type'] == 'custom_suggestion' ? 8888 : DateTime.now().millisecond,
+    await _presentOnce(data, notificationViewerUid, (id) => _localNotifications.show(
+      id: data['type'] == 'custom_suggestion' ? 8888 : id,
       title: title,
       body: body,
       payload: payloadData,
@@ -573,29 +615,38 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
           channelDescription: androidChannel.description,
           importance: Importance.high,
           priority: Priority.high,
+          onlyAlertOnce: NotificationPayload.externalTypes.contains(type),
           icon: '@drawable/ic_notification',
           largeIcon: largeIcon?? const DrawableResourceAndroidBitmap('@drawable/ic_notification'),
-          styleInformation: bigPictureStyle,
+          styleInformation: bigPictureStyle ?? BigTextStyleInformation(body),
         ),
-        iOS: const DarwinNotificationDetails(
+        iOS: DarwinNotificationDetails(
+          attachments: richImagePath == null ? null : [DarwinNotificationAttachment(richImagePath)],
           presentAlert: true,
           presentBadge: true,
           presentSound: true,
         ),
       ),
-    );
+    ));
   }
 
     Future<void> _showNotification(RemoteMessage message, AndroidNotificationChannel channel) async {
     final notification = message.notification;
     final data = message.data;
     final notificationViewerUid = FirebaseAuth.instance.currentUser?.uid;
+    if (!NotificationPayload.mayPresent(data, notificationViewerUid,
+        NotificationPayload.text([data['body'], notification?.body]))) {
+      return;
+    }
     if (!await _mayShowPostNotification(data)) return;
 
         // [Titi Update] - معاينة الرسائل الخاصة + زر following
     final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
     final bool previewEnabled = prefs.getBool('messages_preview') ?? true;
     final String type = (data['type'] ?? "").toString();
+    final interactionKey = NotificationPayload.preferenceKey(type);
+    if (interactionKey != null && prefs.getBool(interactionKey) == false) return;
     // [عرض مرة واحدة - الخاص] منع عرض أو تحميل الوسائط في الإشعارات
     final bool privateViewOnce = (type == 'chat' || type == 'message') &&
         (data['viewOnce'] == true || data['viewOnce']?.toString() == 'true');
@@ -654,8 +705,8 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
       }
     }
 
-    String titleToShow = notification?.title?? data['title']?? "Tini";
-    String bodyToShow = notification?.body?? data['body']?? "";
+    String titleToShow = NotificationPayload.text([data['title'], notification?.title, "Tini"]);
+    String bodyToShow = NotificationPayload.text([data['body'], notification?.body]);
 
     String? avatarUrl = data['avatar'];
     String? postImageUrl = privateViewOnce ? null : (data['postImage']?? data['bigPicture']?? data['imageUrl']?? data['mediaUrl']?? data['thumbnailUrl']);
@@ -669,6 +720,7 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
 }
 
     BigPictureStyleInformation? bigPictureStyle;
+    String? richImagePath;
     FilePathAndroidBitmap? largeIcon;
 
     try {
@@ -687,6 +739,7 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
       if (postImageUrl!= null && postImageUrl.isNotEmpty) {
         final bigPicPath = await _downloadImage(postImageUrl, "big_${message.hashCode}");
         if (bigPicPath!= null) {
+          richImagePath = bigPicPath;
           bigPictureStyle = BigPictureStyleInformation(
             FilePathAndroidBitmap(bigPicPath),
             contentTitle: titleToShow,
@@ -712,8 +765,8 @@ final payloadData = jsonEncode({'postId': message.data['postId'], 'commentId': m
     if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
     if (!await _mayShowPostNotification(data)) return;
     if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
-    await _localNotifications.show(
-      id: data['type'] == 'custom_suggestion' ? 8888 : message.hashCode,
+    await _presentOnce(data, notificationViewerUid, (id) => _localNotifications.show(
+      id: data['type'] == 'custom_suggestion' ? 8888 : id,
       title: titleToShow,
       body: bodyToShow,
       payload: payloadData,
@@ -724,22 +777,24 @@ final payloadData = jsonEncode({'postId': message.data['postId'], 'commentId': m
           channelDescription: channel.description,
           importance: Importance.high,
           priority: Priority.high,
+          onlyAlertOnce: NotificationPayload.externalTypes.contains(type),
           icon: '@drawable/ic_notification',
           largeIcon: largeIcon?? const DrawableResourceAndroidBitmap('@drawable/ic_notification'),
-          styleInformation: bigPictureStyle,
+          styleInformation: bigPictureStyle ?? BigTextStyleInformation(bodyToShow),
         ),
-        iOS: const DarwinNotificationDetails(
+        iOS: DarwinNotificationDetails(
+          attachments: richImagePath == null ? null : [DarwinNotificationAttachment(richImagePath)],
           presentAlert: true,
           presentBadge: true,
           presentSound: true,
         ),
       ),
-    );
+    ));
   }
 
     Future<String?> _downloadImage(String url, String name) async {
     try {
-      final res = await http.get(Uri.parse(url));
+      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 4));
       if (res.statusCode!= 200) return null;
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/$name.jpg');
@@ -762,7 +817,7 @@ final payloadData = jsonEncode({'postId': message.data['postId'], 'commentId': m
 
   Future<String?> _createAvatarWithBadge(String avatarUrl, int id) async {
     try {
-      final res = await http.get(Uri.parse(avatarUrl));
+      final res = await http.get(Uri.parse(avatarUrl)).timeout(const Duration(seconds: 4));
       if (res.statusCode!= 200) return null;
      img.Image? avatar = img.decodeImage(res.bodyBytes);
       if (avatar == null) return null;

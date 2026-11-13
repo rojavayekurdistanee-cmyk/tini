@@ -336,7 +336,8 @@ exports.sendActivityNotification = onDocumentCreated({
     const activity = snap.data();
     const toUid = activity.toUid;
     const fromUid = activity.fromUid;
-    const postId = activity.postId;
+    const postId = activity.postId ? String(activity.postId) : "";
+    let resolvedPostId = postId;
     const commentId = (activity.commentId || "").toString();
     const type = activity.type || "general";
 
@@ -384,15 +385,15 @@ exports.sendActivityNotification = onDocumentCreated({
         }
 
         let finalText =
-            activity.text || `${senderName} لديه تفاعل جديد`;
+            String(activity.text || "").trim() || `${senderName} لديه تفاعل جديد`;
 
         // --- جيب صورة الشات / الفيديو ---
-        let postImage = "";
+        let postImage = activity.thumbnailUrl || activity.postImage || "";
 
         if (activity.messageType === 'video' && activity.thumbnailUrl) {
             postImage = activity.thumbnailUrl;
         } else {
-            postImage = activity.mediaUrl || "";
+            postImage = postImage || activity.mediaUrl || "";
         }
 
         let postDesc = "";
@@ -435,6 +436,7 @@ exports.sendActivityNotification = onDocumentCreated({
 
                 if (postDoc.exists) {
                     const postData = postDoc.data();
+                    resolvedPostId = postDoc.id;
 
                     postImage =
                         postData.thumbnailUrl ||
@@ -461,6 +463,18 @@ exports.sendActivityNotification = onDocumentCreated({
             }
         }
 
+        // Activity text describes the action; the actual comment is stored separately.
+        if ((type === 'comment' || type === 'reply') && commentId && resolvedPostId) {
+            try {
+                const commentDoc = await db.collection('posts').doc(resolvedPostId)
+                    .collection('comments').doc(commentId).get();
+                const commentText = commentDoc.exists ? String(commentDoc.data().text || "").trim() : "";
+                if (commentText) finalText += `: ${commentText}`;
+            } catch (error) {
+                console.warn("Activity comment preview unavailable:", error.code || 'unknown');
+            }
+        }
+
         // ------------------------------------
 
         const receiverDoc = await db
@@ -482,8 +496,8 @@ exports.sendActivityNotification = onDocumentCreated({
 
         if (fcmTokens.length === 0) return null;
 
-        const cleanTokens = fcmTokens.filter(
-            t => t && t.length > 10
+        const cleanTokens = [...new Set(fcmTokens)].filter(
+            t => typeof t === 'string' && t.length > 10
         );
 
         if (cleanTokens.length === 0) return null;
@@ -583,70 +597,108 @@ exports.sendActivityNotification = onDocumentCreated({
             }
         }
 
-        // Likes, comments, and new followers need an OS-visible push when Tini
-        // is backgrounded or terminated. Save/share and other existing types
-        // keep their original data-only delivery path.
-        const externalSocialPush =
-            type === 'like' ||
-            type === 'comment' ||
-            type === 'follow' ||
-            type === 'new_follower' ||
-            type === 'new_followers';
+        // Android data-only delivery keeps rich images, audience checks and local
+        // mute/DND settings in Flutter for every activity type.
+        const data = {
+            title: senderName,
+            body: finalText,
+            activityId: event.params.activityId,
+            eventId: event.id || event.params.activityId,
+            toUid,
+            type,
+            fromUid: fromUid || "",
+            postId: resolvedPostId,
+            commentId,
+            avatar: senderAvatar || "",
+            postImage: postImage || "",
+            postDesc: postDesc || ""
+        };
 
+        // FCM data values must be strings; leave room below the 4096-byte limit.
+        for (const key of Object.keys(data)) data[key] = String(data[key]);
+        const trimUtf8 = (value, bytes) => {
+            let result = "";
+            let length = 0;
+            for (const character of value) {
+                const size = Buffer.byteLength(character, 'utf8');
+                if (length + size > bytes) break;
+                result += character;
+                length += size;
+            }
+            return result;
+        };
+        data.title = trimUtf8(data.title, 200);
+        data.body = trimUtf8(data.body, 1200);
+        data.postDesc = trimUtf8(data.postDesc, 300);
+        for (const key of ['postDesc', 'avatar', 'postImage']) {
+            if (Buffer.byteLength(JSON.stringify(data), 'utf8') <= 3500) break;
+            data[key] = "";
+        }
+        if (Buffer.byteLength(JSON.stringify(data), 'utf8') > 3500) {
+            console.error("Activity push payload too large:", event.params.activityId);
+            return null;
+        }
+
+        // Keep the existing iOS OS-visible delivery for likes/comments/follows.
+        // Moving these to silent APNs would regress delivery when iOS suspends Flutter.
+        const iosSystemAlert = ['like', 'comment', 'follow', 'new_follower', 'new_followers'].includes(type);
         const messages = cleanTokens.map(token => ({
-            token: token,
-
-            ...(externalSocialPush ? {
-                notification: {
-                    title: senderName,
-                    body: finalText
-                }
-            } : {}),
-
-            data: {
-                title: senderName,
-                body: finalText,
-                activityId: event.params.activityId,
-                type: type,
-                fromUid: fromUid || "",
-                postId: postId || "",
-                commentId: commentId || "",
-                avatar: senderAvatar || "",
-                postImage: postImage || "",
-                postDesc: postDesc || ""
-            },
-
-            android: {
-                priority: "high",
-
-                ...(externalSocialPush ? {
-                    notification: {
-                        channelId: "titi_star_channel",
-                        icon: "ic_notification",
-                        sound: "default"
-                    }
-                } : {})
+            token,
+            data,
+            android: { priority: "high" },
+            apns: {
+                headers: {
+                    'apns-push-type': iosSystemAlert ? 'alert' : 'background',
+                    'apns-priority': iosSystemAlert ? '10' : '5'
+                },
+                payload: { aps: iosSystemAlert
+                    ? { alert: { title: data.title, body: data.body }, sound: 'default' }
+                    : { contentAvailable: true } }
             }
         }));
 
-        // Preserve the original delivery semantics for save/share and every
-        // other existing type. Only the three requested types use the new path.
-        if (!externalSocialPush) {
-            getMessaging().sendEach(messages);
-
-            console.log(
-                "Data notification sent with avatar:",
-                senderAvatar,
-                "and postImage:",
-                postImage,
-                "commentId:",
-                commentId
-            );
-
-            return { success: true };
+        const batchResult = { successCount: 0, failureCount: 0, responses: [] };
+        const invalidTokens = [];
+        const retryableCodes = new Set([
+            'messaging/internal-error', 'messaging/server-unavailable',
+            'messaging/unknown-error'
+        ]);
+        // sendEach accepts at most 500 messages. Await every batch, and retry
+        // only explicit transient failures, never tokens already accepted by FCM.
+        for (let start = 0; start < messages.length; start += 500) {
+            let pending = messages.slice(start, start + 500);
+            for (let attempt = 0; pending.length && attempt < 3; attempt++) {
+                const result = await getMessaging().sendEach(pending);
+                const retry = [];
+                result.responses.forEach((response, index) => {
+                    const code = response.error?.code;
+                    if (!response.success && retryableCodes.has(code) && attempt < 2) {
+                        retry.push(pending[index]);
+                        return;
+                    }
+                    batchResult.responses.push(response);
+                    if (response.success) batchResult.successCount++;
+                    else {
+                        batchResult.failureCount++;
+                        if (code === 'messaging/registration-token-not-registered' ||
+                            code === 'messaging/invalid-registration-token') {
+                            invalidTokens.push(pending[index].token);
+                        }
+                    }
+                });
+                pending = retry;
+                if (pending.length) {
+                    await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+                }
+            }
         }
-
-        const batchResult = await getMessaging().sendEach(messages);
+        if (invalidTokens.length) {
+            try {
+                await receiverDoc.ref.update({ fcmTokens: FieldValue.arrayRemove(...invalidTokens) });
+            } catch (error) {
+                console.warn("Activity push token cleanup failed:", error.code || 'unknown');
+            }
+        }
 
         if (batchResult.failureCount > 0) {
             console.warn("Activity push partial/total failure:", {
