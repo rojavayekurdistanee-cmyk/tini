@@ -330,7 +330,7 @@ exports.sendActivityNotification = onDocumentCreated({
     region: "europe-west1",
     document: "activities/{activityId}"
 }, async (event) => {
-   
+
     const snap = event.data;
     if (!snap) return null;
     const activity = snap.data();
@@ -340,51 +340,86 @@ exports.sendActivityNotification = onDocumentCreated({
     const commentId = (activity.commentId || "").toString();
     const type = activity.type || "general";
 
-// [Tini Update] - لا ترسل إشعار خارجي للستوري و زيارة الملف الشخصي + منع تكرار اشعار قد تعرفه
-if (type === 'story_new' || type === 'view' || type === 'story_view' || type === 'following_post' || type === 'people_you_may_know_post' || type === 'message' || type === 'chat' || type === 'private_message') {
-  console.log("Skipped external notification for type:", type);
-  return null;
-}
+    // [Tini Update] - لا ترسل إشعار خارجي للستوري و زيارة الملف الشخصي + منع تكرار اشعار قد تعرفه
+    if (
+        type === 'story_new' ||
+        type === 'view' ||
+        type === 'story_view' ||
+        type === 'following_post' ||
+        type === 'people_you_may_know_post' ||
+        type === 'message' ||
+        type === 'chat' ||
+        type === 'private_message'
+    ) {
+        console.log("Skipped external notification for type:", type);
+        return null;
+    }
 
-if (!toUid || toUid === fromUid) return null;
+    if (!toUid || toUid === fromUid) return null;
 
     try {
         let senderAvatar = "";
         let senderName = "مستخدم";
+
         try {
             const sDoc = await db.collection('users').doc(fromUid).get();
+
             if (sDoc.exists) {
                 const senderData = sDoc.data();
-                senderName = senderData.fullName || senderData.username || "مستخدم";
-                senderAvatar = senderData.profileImg || senderData.photoUrl || senderData.avatarUrl || senderData.profileImage || "";
+
+                senderName =
+                    senderData.fullName ||
+                    senderData.username ||
+                    "مستخدم";
+
+                senderAvatar =
+                    senderData.profileImg ||
+                    senderData.photoUrl ||
+                    senderData.avatarUrl ||
+                    senderData.profileImage ||
+                    "";
             }
-        } catch (e) { console.log("sender fetch error", e); }
-
-                let finalText = activity.text || `${senderName} لديه تفاعل جديد`;
-
-                // --- جيب صورة الشات / الفيديو ---
-        let postImage = "";
-        if (activity.messageType === 'video' && activity.thumbnailUrl) {
-          postImage = activity.thumbnailUrl; // اذا فيديو اعرض الصورة المصغرة
-        } else {
-          postImage = activity.mediaUrl || "";
+        } catch (e) {
+            console.log("sender fetch error", e);
         }
+
+        let finalText =
+            activity.text || `${senderName} لديه تفاعل جديد`;
+
+        // --- جيب صورة الشات / الفيديو ---
+        let postImage = "";
+
+        if (activity.messageType === 'video' && activity.thumbnailUrl) {
+            postImage = activity.thumbnailUrl;
+        } else {
+            postImage = activity.mediaUrl || "";
+        }
+
         let postDesc = "";
 
         // اذا رسالة شات وفيها صورة/فيديو، لا تدور بالبوستات
         let isChatMessage = type === 'message';
 
-        if (postId &&!isChatMessage) {
+        if (postId && !isChatMessage) {
             try {
                 let postDoc = await db.collection('posts').doc(postId).get();
 
                 if (!postDoc.exists && postId.endsWith('.mp4')) {
-                    const idWithoutExt = postId.replace('.mp4','');
-                    postDoc = await db.collection('posts').doc(idWithoutExt).get();
+                    const idWithoutExt = postId.replace('.mp4', '');
+
+                    postDoc = await db
+                        .collection('posts')
+                        .doc(idWithoutExt)
+                        .get();
                 }
 
                 if (!postDoc.exists) {
-                    const q = await db.collection('posts').where('postId','==',postId).limit(1).get();
+                    const q = await db
+                        .collection('posts')
+                        .where('postId', '==', postId)
+                        .limit(1)
+                        .get();
+
                     if (!q.empty) {
                         postDoc = q.docs[0];
                     }
@@ -392,76 +427,182 @@ if (!toUid || toUid === fromUid) return null;
 
                 // fallback للـ videos اذا بدك
                 if (!postDoc.exists) {
-                    postDoc = await db.collection('videos').doc(postId).get();
+                    postDoc = await db
+                        .collection('videos')
+                        .doc(postId)
+                        .get();
                 }
 
                 if (postDoc.exists) {
                     const postData = postDoc.data();
-                    postImage = postData.thumbnailUrl || postData.postImage || postData.imageUrl || postData.mediaUrl || postData.image || postImage || "";
+
+                    postImage =
+                        postData.thumbnailUrl ||
+                        postData.postImage ||
+                        postData.imageUrl ||
+                        postData.mediaUrl ||
+                        postData.image ||
+                        postImage ||
+                        "";
+
                     postDesc = postData.description || "";
-                    console.log("FOUND POST:", postDoc.id, "thumb:", postImage);
+
+                    console.log(
+                        "FOUND POST:",
+                        postDoc.id,
+                        "thumb:",
+                        postImage
+                    );
                 } else {
                     console.log("POST NOT FOUND FOR:", postId);
                 }
-            } catch (e) { console.log("post fetch error", e); }
+            } catch (e) {
+                console.log("post fetch error", e);
+            }
         }
+
         // ------------------------------------
 
-        const receiverDoc = await db.collection('users').doc(toUid).get();
+        const receiverDoc = await db
+            .collection('users')
+            .doc(toUid)
+            .get();
+
         if (!receiverDoc.exists) return null;
+
         const receiverData = receiverDoc.data();
-        const prefsDoc = await db.doc(`users/${toUid}/notificationSettings/preferences`).get();
+
+        const prefsDoc = await db
+            .doc(`users/${toUid}/notificationSettings/preferences`)
+            .get();
+
         const prefs = prefsDoc.exists ? prefsDoc.data() : null;
+
         const fcmTokens = receiverData?.fcmTokens || [];
+
         if (fcmTokens.length === 0) return null;
-        const cleanTokens = fcmTokens.filter(t => t && t.length > 10);
+
+        const cleanTokens = fcmTokens.filter(
+            t => t && t.length > 10
+        );
+
         if (cleanTokens.length === 0) return null;
 
-                        // [Tini Update] - ربط زر تسجيلات الإعجاب بقسم التفاعلات
+        // [Tini Update] - ربط زر تسجيلات الإعجاب بقسم التفاعلات
         if (type === 'like') {
-            if (prefs?.likes === false || receiverData?.notificationSettings?.likes === false) {
-                console.log(`Skipped LIKE for ${toUid} - muted from interactions`);
-                return null;
-            }
-        }
-        // [Tini Update] - ربط زر مرات الإضافة إلى المحفوظات
-        if (type === 'save' || type === 'bookmark' || type === 'favorite' || type === 'saves') {
-            if (prefs?.saves === false || receiverData?.notificationSettings?.saves === false) {
-                console.log(`Skipped SAVE for ${toUid} - muted from interactions`);
-                return null;
-            }
-        }
-        // [Tini Update] - ربط زر التعليقات
-        if (type === 'comment') {
-            if (prefs?.comments === false || receiverData?.notificationSettings?.comments === false) {
-                console.log(`Skipped COMMENT for ${toUid} - muted from interactions`);
-                return null;
-            }
-        }
-        // [Tini Update] - ربط زر متابعون جدد
-        if (type === 'follow' || type === 'new_follower' || type === 'new_followers') {
-            if (prefs?.new_followers === false || receiverData?.notificationSettings?.new_followers === false) {
-                console.log(`Skipped FOLLOW for ${toUid} - muted from interactions`);
-                return null;
-            }
-        }
-        // [Tini Update] - ربط زر منشورات معاد نشرها
-        if (type === 'repost' || type === 'reposts' || type === 'share') {
-            if (prefs?.reposts === false || receiverData?.notificationSettings?.reposts === false) {
-                console.log(`Skipped REPOST for ${toUid} - muted from interactions`);
-                return null;
-            }
-        }
-        // [Tini Update] - ربط زر رسائل خاصة (المهم)
-        if (type === 'message' || type === 'chat' || type === 'private_message') {
-            if (prefs?.private === false || receiverData?.notificationSettings?.private === false) {
-                console.log(`Skipped MESSAGE for ${toUid} - muted private messages`);
+            if (
+                prefs?.likes === false ||
+                receiverData?.notificationSettings?.likes === false
+            ) {
+                console.log(
+                    `Skipped LIKE for ${toUid} - muted from interactions`
+                );
                 return null;
             }
         }
 
-getMessaging().sendEach(cleanTokens.map(token => ({
+        // [Tini Update] - ربط زر مرات الإضافة إلى المحفوظات
+        if (
+            type === 'save' ||
+            type === 'bookmark' ||
+            type === 'favorite' ||
+            type === 'saves'
+        ) {
+            if (
+                prefs?.saves === false ||
+                receiverData?.notificationSettings?.saves === false
+            ) {
+                console.log(
+                    `Skipped SAVE for ${toUid} - muted from interactions`
+                );
+                return null;
+            }
+        }
+
+        // [Tini Update] - ربط زر التعليقات
+        if (type === 'comment') {
+            if (
+                prefs?.comments === false ||
+                receiverData?.notificationSettings?.comments === false
+            ) {
+                console.log(
+                    `Skipped COMMENT for ${toUid} - muted from interactions`
+                );
+                return null;
+            }
+        }
+
+        // [Tini Update] - ربط زر متابعون جدد
+        if (
+            type === 'follow' ||
+            type === 'new_follower' ||
+            type === 'new_followers'
+        ) {
+            if (
+                prefs?.new_followers === false ||
+                receiverData?.notificationSettings?.new_followers === false
+            ) {
+                console.log(
+                    `Skipped FOLLOW for ${toUid} - muted from interactions`
+                );
+                return null;
+            }
+        }
+
+        // [Tini Update] - ربط زر منشورات معاد نشرها
+        if (
+            type === 'repost' ||
+            type === 'reposts' ||
+            type === 'share'
+        ) {
+            if (
+                prefs?.reposts === false ||
+                receiverData?.notificationSettings?.reposts === false
+            ) {
+                console.log(
+                    `Skipped REPOST for ${toUid} - muted from interactions`
+                );
+                return null;
+            }
+        }
+
+        // [Tini Update] - ربط زر رسائل خاصة (المهم)
+        if (
+            type === 'message' ||
+            type === 'chat' ||
+            type === 'private_message'
+        ) {
+            if (
+                prefs?.private === false ||
+                receiverData?.notificationSettings?.private === false
+            ) {
+                console.log(
+                    `Skipped MESSAGE for ${toUid} - muted private messages`
+                );
+                return null;
+            }
+        }
+
+        // Likes, comments, and new followers need an OS-visible push when Tini
+        // is backgrounded or terminated. Save/share and other existing types
+        // keep their original data-only delivery path.
+        const externalSocialPush =
+            type === 'like' ||
+            type === 'comment' ||
+            type === 'follow' ||
+            type === 'new_follower' ||
+            type === 'new_followers';
+
+        const messages = cleanTokens.map(token => ({
             token: token,
+
+            ...(externalSocialPush ? {
+                notification: {
+                    title: senderName,
+                    body: finalText
+                }
+            } : {}),
+
             data: {
                 title: senderName,
                 body: finalText,
@@ -474,12 +615,63 @@ getMessaging().sendEach(cleanTokens.map(token => ({
                 postImage: postImage || "",
                 postDesc: postDesc || ""
             },
+
             android: {
-                priority: "high"
+                priority: "high",
+
+                ...(externalSocialPush ? {
+                    notification: {
+                        channelId: "titi_star_channel",
+                        icon: "ic_notification",
+                        sound: "default"
+                    }
+                } : {})
             }
-        })));
-        console.log("Data notification sent with avatar:", senderAvatar, "and postImage:", postImage, "commentId:", commentId);
-        return { success: true };
+        }));
+
+        // Preserve the original delivery semantics for save/share and every
+        // other existing type. Only the three requested types use the new path.
+        if (!externalSocialPush) {
+            getMessaging().sendEach(messages);
+
+            console.log(
+                "Data notification sent with avatar:",
+                senderAvatar,
+                "and postImage:",
+                postImage,
+                "commentId:",
+                commentId
+            );
+
+            return { success: true };
+        }
+
+        const batchResult = await getMessaging().sendEach(messages);
+
+        if (batchResult.failureCount > 0) {
+            console.warn("Activity push partial/total failure:", {
+                activityId: event.params.activityId,
+                type,
+                successCount: batchResult.successCount,
+                failureCount: batchResult.failureCount,
+
+                errors: batchResult.responses
+                    .filter(result => !result.success)
+                    .map(result => result.error?.code || 'unknown')
+            });
+        }
+
+        console.log("Activity push completed:", {
+            activityId: event.params.activityId,
+            type,
+            successCount: batchResult.successCount,
+            failureCount: batchResult.failureCount
+        });
+
+        return {
+            success: batchResult.successCount > 0
+        };
+
     } catch (error) {
         console.error("Activity notification error:", error);
         return null;

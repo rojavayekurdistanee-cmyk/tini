@@ -39,6 +39,15 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await FirebaseFirestore.instance.collection('chat_rooms').doc(message.data['roomId']).collection('messages').doc(message.data['messageId']).update({'isDelivered': true});
     } catch(e){}
   }
+  // FCM displays notification+data messages in the system tray while
+  // backgrounded. Do not generate a duplicate local push for these three types.
+  final backgroundType = (message.data['type'] ?? '').toString();
+  if (message.notification != null &&
+      const {'like', 'comment', 'follow', 'new_follower', 'new_followers'}
+          .contains(backgroundType)) {
+    return;
+  }
+
   final service = NotificationService();
   await service.initForBackground();
 
@@ -112,10 +121,16 @@ class NotificationService {
     });
 
     FirebaseMessaging.onMessage.listen((message) async {
-      // Firestore owns in-app social presentation. Keep messages and every other
-      // notification on their existing path, including background delivery.
-      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
-          await BannerManager.instance.handleForegroundActivity(message.data)) { return; }
+      // Keep existing in-app banner handling. The three requested social
+      // events must ALSO produce an external notification while Tini is open.
+      final type = (message.data['type'] ?? '').toString();
+      final requiresExternalPush =
+          const {'like', 'comment', 'follow', 'new_follower', 'new_followers'}
+              .contains(type);
+      final handledByBanner =
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
+              await BannerManager.instance.handleForegroundActivity(message.data);
+      if (handledByBanner && !requiresExternalPush) return;
       await _showNotification(message, androidChannel);
     });
 
