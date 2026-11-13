@@ -22,7 +22,7 @@ import 'visits_screen.dart';
 import 'dart:convert';
 import 'chat_screen.dart'; // <-- اضافة جديدة للشات
 import 'messages_tab.dart'; // <-- صندوق الوارد
-import 'titi_single_engine.dart';
+import 'banner_video_navigation.dart';
 import 'group_chat_screen.dart';
 import 'audience_access.dart';
 
@@ -254,36 +254,10 @@ class NotificationService {
       }
 
 
-      final bool shouldOpenComments = type == "comment";
-
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future.delayed(const Duration(milliseconds: 1400), () {
-                    if (isFromTerminated) {
-                      
-            navigatorKey.currentState?.pushAndRemoveUntil(
-              MaterialPageRoute(builder: (_) => PostViewScreen(
-                posts: [doc],
-                initialIndex: 0,
-                openComments: shouldOpenComments,
-                highlightCommentId: shouldOpenComments? commentId?.toString() : null,
-                isFromTerminated: true,
-              )),
-              (route) => false,
-            );
-          } else {
-            
-            final String homeUrl = TitiSingleEngine().currentUrl;
-            final bool wasPaused = TitiSingleEngine().isUserPaused;
-            navigatorKey.currentState?.push(
-              MaterialPageRoute(builder: (_) => PostViewScreen(
-                posts: [doc],
-                initialIndex: 0,
-                openComments: shouldOpenComments,
-                highlightCommentId: shouldOpenComments? commentId?.toString() : null,
-                isFromTerminated: false,
-              )),
-            ).then((_) => _restoreHomeVideo(homeUrl, wasPaused));
-          }
+          _openNotificationPost(doc, type: type, commentId: commentId?.toString(),
+              isFromTerminated: isFromTerminated);
         });
       });
     } catch (e) {
@@ -384,34 +358,8 @@ class NotificationService {
       }
 
 
-      final bool shouldOpenComments = type == "comment";
-
-            if (isFromTerminated) {
-              
-        navigatorKey.currentState?.pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => PostViewScreen(
-            posts: [doc],
-            initialIndex: 0,
-            openComments: shouldOpenComments,
-            highlightCommentId: shouldOpenComments? commentId?.toString() : null,
-            isFromTerminated: true,
-          )),
-          (route) => false,
-        );
-      } else {
-        
-        final String homeUrl = TitiSingleEngine().currentUrl;
-        final bool wasPaused = TitiSingleEngine().isUserPaused;
-        navigatorKey.currentState?.push(
-          MaterialPageRoute(builder: (_) => PostViewScreen(
-            posts: [doc],
-            initialIndex: 0,
-            openComments: shouldOpenComments,
-            highlightCommentId: shouldOpenComments? commentId?.toString() : null,
-            isFromTerminated: false,
-          )),
-        ).then((_) => _restoreHomeVideo(homeUrl, wasPaused));
-      }
+      await _openNotificationPost(doc, type: type,
+          commentId: commentId?.toString(), isFromTerminated: isFromTerminated);
     } catch (e) {
       if (payload.isEmpty) {
         return;
@@ -421,47 +369,47 @@ class NotificationService {
         if (!doc.exists) {
           return;
         }
-                if (isFromTerminated) {
-                  TitiSingleEngine().stop();
-          navigatorKey.currentState?.pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => PostViewScreen(
-              posts: [doc],
-              initialIndex: 0,
-              openComments: false,
-              isFromTerminated: true,
-            )),
-            (route) => false,
-          );
-        } else {
-          final String homeUrl = TitiSingleEngine().currentUrl;
-          final bool wasPaused = TitiSingleEngine().isUserPaused;
-          TitiSingleEngine().stop();
-          navigatorKey.currentState?.push(
-            MaterialPageRoute(builder: (_) => PostViewScreen(
-              posts: [doc],
-              initialIndex: 0,
-              openComments: false,
-              isFromTerminated: false,
-            )),
-          ).then((_) => _restoreHomeVideo(homeUrl, wasPaused));
-        }
+        await _openNotificationPost(doc, type: 'general',
+            isFromTerminated: isFromTerminated);
       } catch (err) {
       }
     }
   }
 
-  // يرجّع فيديو الهوم يشتغل بعد الرجوع من فيديو الإشعار
-  // (الهوم وفيديو الإشعار بيستخدموا نفس المحرك، فبعد الرجوع المحرك بيضل على فيديو الإشعار)
-  void _restoreHomeVideo(String homeUrl, bool wasPaused) {
-    Future.delayed(const Duration(milliseconds: 500), () async {
-      try {
-        final engine = TitiSingleEngine();
-        await engine.unlockForHome();
-        if (!wasPaused && homeUrl.isNotEmpty) {
-          await engine.playUrl(homeUrl);
-        }
-      } catch (_) {}
-    });
+  // Every external video entry point uses the same ownership handoff as the
+  // in-app video banners. A non-video return destination must remain silent.
+  Future<void> _openNotificationPost(
+    DocumentSnapshot doc, {
+    required String type,
+    String? commentId,
+    required bool isFromTerminated,
+  }) async {
+    final viewer = FirebaseAuth.instance.currentUser?.uid;
+    if (viewer == null) return;
+    // Resolve the access check before the playback scope's first activation.
+    // Otherwise a newly received post may still be pending at that frame.
+    await AudienceAccess.instance.verifyPost(doc.id);
+    if (FirebaseAuth.instance.currentUser?.uid != viewer) return;
+    final navigator = navigatorKey.currentState;
+    if (navigator == null || !navigator.mounted) return;
+    final data = doc.data() as Map<String, dynamic>? ?? {};
+    final hls = (data['hlsPath'] ?? '').toString().trim();
+    final url = hls.isNotEmpty ? hls : (data['videoUrl'] ?? '').toString().trim();
+    final openComments = const ['comment', 'reply', 'comment_like'].contains(type);
+    await BannerVideoNavigation.open(
+      navigator: navigator,
+      url: url,
+      replaceStack: isFromTerminated,
+      onPushed: () {},
+      child: PostViewScreen(
+        posts: [doc],
+        initialIndex: 0,
+        openComments: openComments,
+        highlightCommentId: openComments ? commentId : null,
+        isFromTerminated: isFromTerminated,
+        isBannerNavigation: true,
+      ),
+    );
   }
 
   Future<void> initForBackground() async {
