@@ -357,51 +357,92 @@ Widget _buildAccountTileFromUid(String uid) {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background, // Oil Dark Base
-      resizeToAvoidBottomInset: false, 
+      resizeToAvoidBottomInset: false,
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
             return CustomScrollView(
               physics: const ClampingScrollPhysics(),
               slivers: [
-                SliverFillRemaining(
-                  hasScrollBody: false,
+                // Account data arrives asynchronously; let the sliver measure
+                // its full content height instead of constraining a flex column.
+                SliverToBoxAdapter(
                   child: Column(
                     children: [
                       SizedBox(height: constraints.maxHeight * 0.08),
                       FadeInDown(
                         key: ValueKey<int>(selectedTabIndex),
                         duration: const Duration(milliseconds: 400),
-                        child: Text(
-                          selectedTabIndex == 1 ? 'يسعدنا رؤيتك مجدداً' : 'إنشاء حساب على Tini',
-                          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: Text(
+                            selectedTabIndex == 1
+                                ? 'يسعدنا رؤيتك مجدداً'
+                                : 'إنشاء حساب على Tini',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 10),
-                      Text(
-                        selectedTabIndex == 1 ? 'قم بإدارة حسابك، وتفاعل مع النجوم' : 'انضم إلى مجتمع Tini اليوم',
-                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Text(
+                          selectedTabIndex == 1
+                              ? 'قم بإدارة حسابك، وتفاعل مع النجوم'
+                              : 'انضم إلى مجتمع Tini اليوم',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 14,
+                          ),
+                        ),
                       ),
                       const SizedBox(height: 40),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 20),
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 300),
-                          child: selectedTabIndex == 1 ? _buildSavedAccountsColumn() : _buildAuthOptionsList(),
-                        ),
-                      ),
-                      const Spacer(), 
-                      const Divider(height: 1, color: Colors.white12),
-                      Container(
-                        color: const Color(0xFF1A222C), // Surface Color
-                        child: Row(
-                          children: [
-                            _buildBottomTab(label: 'إنشاء حساب', index: 0, isSelected: selectedTabIndex == 0),
-                            _buildBottomTab(label: 'لديك حساب بالفعل', index: 1, isSelected: selectedTabIndex == 1),
-                          ],
+                          child: selectedTabIndex == 1
+                              ? _buildSavedAccountsColumn()
+                              : _buildAuthOptionsList(),
                         ),
                       ),
                     ],
+                  ),
+                ),
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(height: 20),
+                        const Divider(height: 1, color: Colors.white12),
+                        Container(
+                          color: const Color(0xFF1A222C), // Surface Color
+                          child: Row(
+                            children: [
+                              _buildBottomTab(
+                                label: 'إنشاء حساب',
+                                index: 0,
+                                isSelected: selectedTabIndex == 0,
+                              ),
+                              _buildBottomTab(
+                                label: 'لديك حساب بالفعل',
+                                index: 1,
+                                isSelected: selectedTabIndex == 1,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
