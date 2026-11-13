@@ -1,4 +1,3 @@
-import 'user_documents.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'post_provider.dart';
@@ -77,9 +76,6 @@ class _PostLikeButtonState extends State<PostLikeButton> with SingleTickerProvid
       if (!wasLiked) {
       Biji.show(context);
     }
-  final docId = '${widget.postId}_${widget.currentUserId}_like';
-  final docRef = FirebaseFirestore.instance.collection('activities').doc(docId);
-  
   if (mounted) {
     setState(() {
       if (isLiked) {
@@ -93,37 +89,9 @@ class _PostLikeButtonState extends State<PostLikeButton> with SingleTickerProvid
     });
   }
 
-  context.read<PostProvider>().toggleLike(widget.postId, widget.postOwnerId ?? "");
-
-  try {
-    if (wasLiked) {
-      await docRef.delete();
-    } else {
-      if (widget.postOwnerId != null && widget.postOwnerId != widget.currentUserId) {
-        // جيب اسم يلي عمل لايك
-        String userName = 'مستخدم';
-        try {
-          final userDoc = await UserDocuments.readable(FirebaseFirestore.instance, widget.currentUserId).get();
-          if (userDoc.exists) {
-            final data = userDoc.data() as Map<String, dynamic>;
-            userName = data['fullName'] ?? data['username'] ?? 'مستخدم';
-          }
-        } catch (_) {}
-
-        await docRef.set({
-          'toUid': widget.postOwnerId,
-          'fromUid': widget.currentUserId,
-          'type': 'like',
-          'text': '$userName أعجب بمنشورك',
-          'postId': widget.postId,
-          'timestamp': FieldValue.serverTimestamp(),
-          'seen': false,
-        }, SetOptions(merge: true));
-      }
-    }
-  } catch (e) {
-    debugPrint("Activity error: $e");
-  }
+  // PostProvider records the successful like once and keeps its activity
+  // document on unlike. A re-like updates that record instead of recreating it.
+  await context.read<PostProvider>().toggleLike(widget.postId, widget.postOwnerId ?? "");
 }
 
   @override

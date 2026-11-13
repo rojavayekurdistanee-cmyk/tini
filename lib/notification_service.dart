@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'banner_manager.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -34,6 +35,7 @@ void notificationTapBackground(NotificationResponse details) {
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
+  debugPrint('[NotificationDelivery] background_received type=${message.data['type']}');
   if (message.data['type'] == 'message' || message.data['type'] == 'chat') {
     try {
       await FirebaseFirestore.instance.collection('chat_rooms').doc(message.data['roomId']).collection('messages').doc(message.data['messageId']).update({'isDelivered': true});
@@ -66,8 +68,13 @@ class NotificationService {
           .any((key) => (data[key] ?? '').toString().isNotEmpty);
     }
     try {
-      return await AudienceAccess.instance.verifyPost(postId);
-    } catch (_) {
+      final allowed = await AudienceAccess.instance.verifyPost(postId);
+      if (!allowed) {
+        debugPrint('[NotificationDelivery] post_access_not_verified type=$type');
+      }
+      return allowed;
+    } catch (error) {
+      debugPrint('[NotificationDelivery] post_access_check_failed type=$type: $error');
       return false;
     }
   }
@@ -112,10 +119,14 @@ class NotificationService {
     });
 
     FirebaseMessaging.onMessage.listen((message) async {
-      // Firestore owns in-app social presentation. Keep messages and every other
-      // notification on their existing path, including background delivery.
-      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
-          await BannerManager.instance.handleForegroundActivity(message.data)) { return; }
+      // Banner presentation and the device notification are independent.
+      // A handled/seen/grouped banner must never consume the FCM delivery.
+      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        unawaited(BannerManager.instance.handleForegroundActivity(message.data)
+            .then<void>((_) {}, onError: (Object error, StackTrace stack) {
+          debugPrint('Foreground banner processing failed: $error');
+        }));
+      }
       await _showNotification(message, androidChannel);
     });
 
@@ -569,6 +580,7 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
         ),
       ),
     );
+    debugPrint('[NotificationDelivery] background_presented type=$type');
   }
 
     Future<void> _showNotification(RemoteMessage message, AndroidNotificationChannel channel) async {
