@@ -1,4 +1,4 @@
-import 'tag_duet_history_screen.dart';
+import 'banner_video_navigation.dart';
 import 'banner_transition.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -149,6 +149,10 @@ class _BannerCardState extends State<_BannerCard> {
     final item = widget.item;
     final viewer = FirebaseAuth.instance.currentUser?.uid;
     manager.dismiss(manual: false);
+    var openingReleased = false;
+    void releaseOpening() {
+      if (!openingReleased) { openingReleased = true; manager.endOpen(); }
+    }
     try {
       final nav = navigatorKey.currentState;
       if (nav == null || viewer == null) return;
@@ -158,15 +162,9 @@ class _BannerCardState extends State<_BannerCard> {
         return;
       }
       Widget destination;
+      String? bannerVideoUrl;
       final postId = item.data['postId']?.toString() ?? '';
-      final targets = item.events.values
-          .map((data) => data['postId'])
-          .whereType<String>()
-          .where((id) => id.isNotEmpty)
-          .toSet();
-      if (item.type == BannerType.mention && targets.length > 1) {
-        destination = const TagDuetHistoryScreen();
-      } else if ({
+      if ({
         BannerType.like,
         BannerType.comment,
         BannerType.mention,
@@ -189,7 +187,12 @@ class _BannerCardState extends State<_BannerCard> {
             auth.blockedBySet.contains(owner)) {
           return;
         }
+        final data = doc.data()!;
+        bannerVideoUrl = (data['hlsPath'] as String?)?.trim();
+        if (bannerVideoUrl == null || bannerVideoUrl.isEmpty) bannerVideoUrl = (data['videoUrl'] as String?)?.trim();
+        if (bannerVideoUrl == null || bannerVideoUrl.isEmpty) return;
         destination = PostViewScreen(
+          isBannerNavigation: true,
           posts: [doc],
           initialIndex: 0,
           openComments: item.type == BannerType.comment,
@@ -215,19 +218,20 @@ class _BannerCardState extends State<_BannerCard> {
           auth.blockedBySet.contains(_actor)) {
         return;
       }
-      try {
-        unawaited(
-          TitiSingleEngine().player.pause().catchError((Object error) {
-            debugPrint('Banner pause skipped: $error');
-          }),
-        );
-      } catch (_) {}
       manager.consume(item);
-      unawaited(nav.push(MaterialPageRoute(builder: (_) => destination)));
+      if (bannerVideoUrl != null) {
+        await BannerVideoNavigation.open(navigator: nav, url: bannerVideoUrl,
+          child: destination, onPushed: releaseOpening);
+      } else {
+        try { await TitiSingleEngine().player.pause(); } catch (_) {}
+        final pushed = nav.push(MaterialPageRoute(builder: (_) => destination));
+        releaseOpening();
+        unawaited(pushed);
+      }
     } catch (error) {
       debugPrint('Banner navigation skipped: $error');
     } finally {
-      manager.endOpen();
+      releaseOpening();
       _tapping = false;
     }
   }

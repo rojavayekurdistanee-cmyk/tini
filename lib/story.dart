@@ -1,3 +1,4 @@
+import 'video_playback_handoff.dart';
 import 'user_documents.dart';
 import 'dart:async';
 import 'audience_access.dart';
@@ -76,6 +77,9 @@ class StoryScreen extends StatefulWidget {
 }
 
 class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
+  ModalRoute<dynamic>? _storyRoute;
+  @override
+  void didChangeDependencies() { super.didChangeDependencies(); _storyRoute = ModalRoute.of(context); }
   int currentIndex = 0;
   double percent = 0.0;
   Timer? _timer;
@@ -106,6 +110,28 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
     @override
   void initState() {
     super.initState();
+    VideoPlaybackRegistry.watch(this, () {
+      if (!mounted || _storyRoute?.isCurrent != true || !_canViewStory || widget.stories.isEmpty) return null;
+      final id = widget.stories[currentIndex].id;
+      return VideoPlaybackOrigin(engine: VideoPlaybackEngine.external, url: '', postId: id,
+        isVisible: () => mounted && _storyRoute?.isCurrent == true && _canViewStory &&
+          widget.stories.isNotEmpty && widget.stories[currentIndex].id == id,
+        suspendExternal: () async {
+          _timer?.cancel();
+          if (mounted) setState(() => _isPaused = true);
+          await _videoController?.pause();
+          await _nextController?.pause(); await _prevController?.pause();
+        },
+        resumeExternal: () async {
+          if (!mounted || _storyRoute?.isCurrent != true || !_canViewStory) return;
+          setState(() => _isPaused = false);
+          if (_videoController?.value.isInitialized == true) {
+            await _playAuthorizedStory(_videoController);
+            _startTimer(isVideo: true);
+          } else { _startTimer(); }
+        },
+      );
+    });
     WidgetsBinding.instance.addObserver(this);
     _replyFocus.addListener(() => setState(() {}));
     
@@ -180,7 +206,7 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
       _prevController?.pause();
       _timer?.cancel();
       setState(() => _isPaused = true);
-    } else if (state == AppLifecycleState.resumed) {
+    } else if (state == AppLifecycleState.resumed && _storyRoute?.isCurrent == true) {
       if (_isPaused) {
         setState(() => _isPaused = false);
         if (_videoController?.value.isInitialized == true) {
@@ -195,10 +221,10 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
 
   Future<void> _playAuthorizedStory(VideoPlayerController? controller) async {
     final generation = _storyGeneration;
-    if (!mounted || !_canViewStory || controller == null ||
+    if (!mounted || _storyRoute?.isCurrent != true || !_canViewStory || controller == null ||
         !identical(_videoController, controller)) return;
     await controller.play();
-    if (!mounted || !_canViewStory || generation != _storyGeneration ||
+    if (!mounted || _storyRoute?.isCurrent != true || !_canViewStory || generation != _storyGeneration ||
         !identical(_videoController, controller)) {
       await controller.setVolume(0);
       await controller.pause();
@@ -341,7 +367,7 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
     if (!_canViewStory) return;
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(milliseconds: 50), (t) {
-      if (!mounted || _isPaused || !_canViewStory) return;
+      if (!mounted || _storyRoute?.isCurrent != true || _isPaused || !_canViewStory) return;
       double step = isVideo &&
                 _videoController!= null &&
                 _videoController!.value.isInitialized
@@ -652,6 +678,7 @@ class _StoryScreenState extends State<StoryScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    VideoPlaybackRegistry.unwatch(this);
     AudienceAccess.instance.removeListener(_onAudienceChanged);
     _storyGeneration++;
     WidgetsBinding.instance.removeObserver(this);

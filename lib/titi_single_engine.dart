@@ -1,3 +1,4 @@
+import 'video_playback_handoff.dart';
 import 'dart:async';
 import 'audience_access.dart';
 import 'package:flutter/foundation.dart';
@@ -103,7 +104,7 @@ class TitiSingleEngine {
     final request = _playGeneration;
     final index = _players.indexOf(target);
     bool allowed() => index >= 0 && index < _playerUrls.length &&
-        !_isLocked && request == _playGeneration && _currentUrl == url &&
+        !_isLocked && request == _playGeneration && _currentUrl == url && VideoPlaybackRegistry.allowsHome(url) &&
         _playerUrls[index] == url && AudienceAccess.instance.canPlayUrl(url);
     if (!allowed()) return;
     await target.play();
@@ -138,7 +139,7 @@ class TitiSingleEngine {
   }
 
   // [Fix]: مشغّل واحد فقط يملك حق إخراج الصوت؛ البقية صامتة ومتوقفة.
-  Future<void> _focusAudio(int? audibleIndex) {
+  Future<void> _focusAudio(int? audibleIndex, {double volume = 100}) {
     final int generation = ++_audioGeneration;
     final Future<void> action = _audioQueue.then<void>((_) async {
       if (generation!= _audioGeneration) return;
@@ -159,7 +160,7 @@ class TitiSingleEngine {
       }
       await Future.wait(silencing);
       if (generation!= _audioGeneration || _isLocked || audibleIndex == null || !AudienceAccess.instance.canPlayUrl(_playerUrls[audibleIndex])) return;
-      try { await _players[audibleIndex].setVolume(100).timeout(const Duration(seconds: 2)); } catch (_) {}
+      try { await _players[audibleIndex].setVolume(volume.clamp(0, 100).toDouble()).timeout(const Duration(seconds: 2)); } catch (_) {}
     });
     _audioQueue = action.catchError((_) {});
     return action;
@@ -185,7 +186,7 @@ class TitiSingleEngine {
   }
 
   Future<void> playUrl(String url, {bool autoPlay = true, String? prevUrl, String? prevPrevUrl, String? nextUrl, String? nextNextUrl, String? nextNextNextUrl, String? postId, List<String>? hashtags}) {
-    if (url.isEmpty || _isLocked || !AudienceAccess.instance.canPlayUrl(url)) return Future<void>.value();
+    if (url.isEmpty || _isLocked || !VideoPlaybackRegistry.allowsHome(url) || !AudienceAccess.instance.canPlayUrl(url)) return Future<void>.value();
     final int request = ++_playGeneration;
     final Future<void> action = _playQueue.then<void>((_) async {
       if (_isLocked || request!= _playGeneration || !AudienceAccess.instance.canPlayUrl(url)) return;
@@ -198,11 +199,16 @@ class TitiSingleEngine {
   }
 
   Future<void> _playUrlNow(String url, {required int request, bool autoPlay = true, String? prevUrl, String? prevPrevUrl, String? nextUrl, String? nextNextUrl, String? nextNextNextUrl, String? postId, List<String>? hashtags}) async {
-    if (_isLocked || request!= _playGeneration || !AudienceAccess.instance.canPlayUrl(url)) return;
+    if (_isLocked || request!= _playGeneration || !VideoPlaybackRegistry.allowsHome(url) || !AudienceAccess.instance.canPlayUrl(url)) return;
     _ensurePlayers();
-    _userPaused = false;
+    _userPaused = !autoPlay;
 
     if (_currentUrl == url && _playerUrls[_activeIndex] == url) {
+      if (!autoPlay) {
+        _userPaused = true;
+        await _focusAudio(null);
+        return;
+      }
       final curPlayer = _players[_activeIndex];
       if (curPlayer.state.playing && curPlayer.state.position < curPlayer.state.duration - const Duration(seconds: 1)) {
         _startWatchTracker(postId, hashtags);
@@ -402,11 +408,11 @@ class TitiSingleEngine {
       await _players[_activeIndex].pause();
     } catch (e) {}
   }
-  Future<void> play() async {
+  Future<void> play({double? volume}) async {
     try {
-      if (_isLocked || !AudienceAccess.instance.canPlayUrl(_currentUrl)) return;
+      if (_isLocked || !VideoPlaybackRegistry.allowsHome(_currentUrl) || !AudienceAccess.instance.canPlayUrl(_currentUrl)) return;
       _userPaused = false;
-      await _focusAudio(_activeIndex);
+      await _focusAudio(_activeIndex, volume: volume ?? 100);
       final p = _players[_activeIndex];
       if (!p.state.playing) {
         await _playIfAllowed(p);
@@ -414,6 +420,7 @@ class TitiSingleEngine {
     } catch (e) {}
   }
   Future<void> forceResumeForTab() async {
+    if (!VideoPlaybackRegistry.allowsLegacyResume) return;
     try {
       if (_isLocked || !AudienceAccess.instance.canPlayUrl(_currentUrl.isNotEmpty ? _currentUrl : _lastUrl)) return; // مهم: لا ترجع تشتغل وانت بالبروفايل/رسائل
       _isOpening = false;
@@ -433,6 +440,7 @@ class TitiSingleEngine {
     } catch (_) {}
   }
   Future<void> resumeLast() async {
+    if (!VideoPlaybackRegistry.allowsLegacyResume) return;
     try {
       if (_isLocked) return;
       if (_lastUrl.isEmpty || !AudienceAccess.instance.canPlayUrl(_lastUrl)) return;
@@ -459,6 +467,7 @@ class TitiSingleEngine {
 
 
   Future<void> emergencyUnlock() async {
+    if (!VideoPlaybackRegistry.allowsLegacyResume) return;
     try {
       _isLocked = false;
       _userPaused = false;
@@ -477,6 +486,7 @@ class TitiSingleEngine {
   
   // [Fix]: بعد اكتمال الرفع لا تشغل الفيديو القديم قبل ظهور الجديد على الشاشة.
   Future<void> unlockForNewUpload() async {
+    if (!VideoPlaybackRegistry.allowsLegacyResume) return;
     _playGeneration++;
     _isLocked = false;
     _userPaused = false;
@@ -486,7 +496,26 @@ class TitiSingleEngine {
     await _focusAudio(null);
   }
 
+  // Restore the hidden page's selection without starting any audio.
+  void restoreNavigationBookmark(String url) {
+    _playGeneration++;
+    _isLocked = true; _userPaused = true; _isOpening = false;
+    _currentUrl = url; _lastUrl = url;
+    final slot = _playerUrls.indexOf(url);
+    if (url.isNotEmpty && slot >= 0) {
+      _activeIndex = slot; activeIndexNotifier.value = slot;
+    }
+  }
+
+  Future<void> unlockForNavigation() async {
+    _playGeneration++;
+    _isLocked = false; _userPaused = true; _isOpening = false;
+    _ensurePlayers();
+    await _focusAudio(null);
+  }
+
   Future<void> unlockForHome() async {
+    if (!VideoPlaybackRegistry.allowsLegacyResume) return;
     try {
       _isLocked = false;
       _userPaused = false;

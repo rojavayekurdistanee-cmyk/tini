@@ -1,3 +1,4 @@
+import 'video_playback_handoff.dart';
 import 'dart:async';
 import 'audience_access.dart';
 import 'package:flutter/foundation.dart';
@@ -90,7 +91,7 @@ class TitiProfileEngine {
     final request = _playGeneration;
     final index = _players.indexOf(target);
     bool allowed() => index >= 0 && index < _playerUrls.length &&
-        !_isLocked && request == _playGeneration && _currentUrl == url &&
+        !_isLocked && request == _playGeneration && _currentUrl == url && VideoPlaybackRegistry.allowsProfile &&
         _playerUrls[index] == url && AudienceAccess.instance.canPlayUrl(url);
     if (!allowed()) return;
     await target.play();
@@ -136,7 +137,7 @@ class TitiProfileEngine {
         if (_playerUrls[idx] == _currentUrl && idx == _activeIndex &&!_userPaused) { Future.delayed(const Duration(milliseconds: 200), () { if (!_isLocked && idx == _activeIndex && _playerUrls[idx] == _currentUrl && AudienceAccess.instance.canPlayUrl(_currentUrl)) unawaited(_playIfAllowed(p)); }); }
       });
       p.stream.completed.listen((completed) {
-        if (completed && idx == _activeIndex && _playerUrls[idx] == _currentUrl && !_isLocked && AudienceAccess.instance.canPlayUrl(_currentUrl)) {
+        if (completed && !_userPaused && idx == _activeIndex && _playerUrls[idx] == _currentUrl && !_isLocked && AudienceAccess.instance.canPlayUrl(_currentUrl)) {
           final pos = p.state.position; final dur = p.state.duration;
           if (dur.inMilliseconds > 0 && pos < dur - const Duration(seconds: 1)) { p.seek(pos); unawaited(_playIfAllowed(p)); }
         }
@@ -168,16 +169,22 @@ class TitiProfileEngine {
   }
 
   Future<void> playUrl(String url, {bool autoPlay = true, String? prevUrl, String? prevPrevUrl, String? nextUrl, String? nextNextUrl, String? nextNextNextUrl}) async {
-    if (url.isEmpty || !AudienceAccess.instance.canPlayUrl(url)) return;
+    if (url.isEmpty || !VideoPlaybackRegistry.allowsProfile || !AudienceAccess.instance.canPlayUrl(url)) return;
     final request = ++_playGeneration;
     if (_isLocked) return; // بلوك القفل
     _ensurePlayers();
     if (_isOpening) _isOpening = false;
-    _userPaused = false;
+    _userPaused = !autoPlay;
     try { await TitiSingleEngine().lock(); } catch (_) {}
     if (_isLocked || request != _playGeneration || !AudienceAccess.instance.canPlayUrl(url)) return;
 
-    if (_currentUrl == url) {
+    if (_currentUrl == url && _playerUrls[_activeIndex] == url) {
+      if (!autoPlay) {
+        _userPaused = true;
+        await _players[_activeIndex].setVolume(0);
+        await _players[_activeIndex].pause();
+        return;
+      }
       final curPlayer = _players[_activeIndex];
       if (curPlayer.state.playing && curPlayer.state.position < curPlayer.state.duration - const Duration(seconds: 1)) return;
       await curPlayer.seek(Duration.zero);
@@ -198,7 +205,8 @@ class TitiProfileEngine {
       }
       try { await _players[_activeIndex].seek(Duration.zero); } catch (_) {}
       if (_isLocked || request != _playGeneration || !AudienceAccess.instance.canPlayUrl(url)) return;
-      await _playIfAllowed(_players[_activeIndex]);
+      if (autoPlay) { await _playIfAllowed(_players[_activeIndex]); }
+      else { _userPaused = true; await _players[_activeIndex].pause(); }
       _preloadNeighbors(prevUrl, prevPrevUrl, nextUrl, nextNextUrl, nextNextNextUrl);
       return;
     }
@@ -258,11 +266,39 @@ class TitiProfileEngine {
   }
 
   Future<void> pause() async { try { _userPaused = true; await _players[_activeIndex].pause(); } catch (_) {} }
-  Future<void> play() async { if (_isLocked || !AudienceAccess.instance.canPlayUrl(_currentUrl)) return; try { _userPaused = false; await _playIfAllowed(_players[_activeIndex]); } catch (_) {} }
+  Future<void> play({double? volume}) async {
+    if (_isLocked || !VideoPlaybackRegistry.allowsProfile || !AudienceAccess.instance.canPlayUrl(_currentUrl)) return;
+    try {
+      _userPaused = false;
+      if (volume != null) await _players[_activeIndex].setVolume(volume.clamp(0, 100).toDouble());
+      await _playIfAllowed(_players[_activeIndex]);
+    } catch (_) {}
+  }
   Future<void> stop() async { _playGeneration++; try { _isOpening = false; _userPaused = true; _isLocked = true; for (var p in _players) await p.pause(); _currentUrl = ""; currentUrlNotifier.value = ""; } catch (_) { _isOpening = false; _isLocked = true; } }
   // بلوك القفل - دوال جديدة
   Future<void> lock() async { _playGeneration++; try { _isOpening = false; _userPaused = true; _isLocked = true; if (_currentUrl.isNotEmpty) _lastUrl = _currentUrl; for (int i = 0; i < _players.length; i++) { try { await _players[i].setVolume(0); if (i!= _activeIndex) await _players[i].pause(); } catch (_) {} } } catch (_) { _isLocked = true; } }
-  Future<void> unlock() async { _isLocked = false; _userPaused = false; try { if (AudienceAccess.instance.canPlayUrl(_currentUrl)) await _players[_activeIndex].setVolume(100); } catch (_) {} }
+  Future<void> unlock() async { if (!VideoPlaybackRegistry.allowsProfile) return; _isLocked = false; _userPaused = false; try { if (AudienceAccess.instance.canPlayUrl(_currentUrl)) await _players[_activeIndex].setVolume(100); } catch (_) {} }
+  // Restore the hidden page's selection without starting any audio.
+  void restoreNavigationBookmark(String url) {
+    _playGeneration++;
+    _isLocked = true; _userPaused = true; _isOpening = false;
+    _currentUrl = url; _lastUrl = url;
+    final slot = _playerUrls.indexOf(url);
+    if (url.isNotEmpty && slot >= 0) {
+      _activeIndex = slot; activeIndexNotifier.value = slot;
+    }
+    currentUrlNotifier.value = url;
+  }
+
+  Future<void> unlockForNavigation() async {
+    _playGeneration++;
+    _isLocked = false; _userPaused = true; _isOpening = false;
+    _ensurePlayers();
+    await Future.wait(_players.map((player) async {
+      await player.setVolume(0); await player.pause();
+    }));
+  }
+
   void dispose() {
     _playGeneration++;
     AudienceAccess.instance.removeListener(_onAudienceChanged);
