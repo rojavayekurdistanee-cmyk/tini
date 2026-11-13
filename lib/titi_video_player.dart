@@ -3,9 +3,6 @@ import 'audience_access.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:provider/provider.dart';
-import 'auth_provider.dart' as custom;
 import 'post_provider.dart';
 import 'titi_single_engine.dart';
 import 'titi_profile_engine.dart';
@@ -66,6 +63,9 @@ class _TitiVideoPlayerState extends State<TitiVideoPlayer> {
   bool _ready = true;
   final _audience = AudienceAccess.instance;
   bool _wasAllowed = false;
+  bool _dependenciesReady = false;
+  bool _wasRouteVisible = false;
+  bool get _routeVisible => _dependenciesReady && (ModalRoute.of(context)?.isCurrent ?? true);
 
   bool get _isAllowed {
     final data = widget.postDoc.data() as Map<String, dynamic>?;
@@ -75,7 +75,7 @@ class _TitiVideoPlayerState extends State<TitiVideoPlayer> {
   void _onAudienceChanged() {
     if (!mounted) return;
     final allowed = _isAllowed;
-    if (widget.isFeedActive && widget.index == widget.currentIndex && allowed != _wasAllowed) {
+    if (_routeVisible && widget.isFeedActive && widget.index == widget.currentIndex && allowed != _wasAllowed) {
       if (!allowed) {
         final data = widget.postDoc.data() as Map<String, dynamic>? ?? {};
         final currentUrl = widget.isFromProfileGrid
@@ -118,7 +118,7 @@ class _TitiVideoPlayerState extends State<TitiVideoPlayer> {
   }
 
   void _playProfileWithNeighbors() {
-    if (!widget.isFeedActive) return;
+    if (!widget.isFeedActive || !_routeVisible) return;
     final String vUrl = _getVideoUrl(widget.postDoc);
     if (vUrl.isEmpty) return;
     try {
@@ -139,7 +139,7 @@ class _TitiVideoPlayerState extends State<TitiVideoPlayer> {
   }
 
 void _playHomeWithNeighbors() {
-    if (!widget.isFeedActive) return;
+    if (!widget.isFeedActive || !_routeVisible) return;
     final String vUrl = _getVideoUrl(widget.postDoc);
     if (vUrl.isEmpty) return;
     try {
@@ -176,15 +176,22 @@ void _playHomeWithNeighbors() {
     _ready = true;
     _audience.addListener(_onAudienceChanged);
     _wasAllowed = _isAllowed;
-    if (widget.isFeedActive && widget.index == widget.currentIndex) {
-      // نفس الكود القديم بدون تخريب
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final first = !_dependenciesReady;
+    _dependenciesReady = true;
+    final visible = _routeVisible;
+    if (visible && (first || !_wasRouteVisible) && widget.isFeedActive && widget.index == widget.currentIndex) {
       if (widget.isFromProfileGrid) {
-        _playProfileWithNeighbors();
+        if (!TitiProfileEngine().isUserPaused) _playProfileWithNeighbors();
       } else {
-        _playHomeWithNeighbors();
+        if (!TitiSingleEngine().isUserPaused) _playHomeWithNeighbors();
       }
     }
-
+    _wasRouteVisible = visible;
   }
 
   @override

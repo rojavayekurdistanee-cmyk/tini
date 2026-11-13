@@ -1,3 +1,4 @@
+import 'video_playback_handoff.dart';
 import 'banner_manager.dart';
 import 'dart:ui';
 import 'audience_access.dart';
@@ -52,6 +53,7 @@ class PostViewScreen extends StatefulWidget {
   // Retained home tabs may rebuild after audience changes while off screen.
   final bool isFeedActive;
   final bool isEmbeddedFeed;
+  final bool isBannerNavigation;
 
   const PostViewScreen({
     super.key,
@@ -71,6 +73,7 @@ class PostViewScreen extends StatefulWidget {
     this.enablePeopleCarousel = false,
     this.isFeedActive = true,
     this.isEmbeddedFeed = false,
+    this.isBannerNavigation = false,
   });
 
   @override
@@ -80,6 +83,8 @@ class PostViewScreen extends StatefulWidget {
 class _PostViewScreenState extends State<PostViewScreen> {
   late PreloadPageController _pageController;
   int _currentIndex = 0;
+  ModalRoute<dynamic>? _playbackRoute;
+  bool get _playbackVisible => mounted && widget.isFeedActive && (_playbackRoute?.isCurrent ?? true);
   late List<DocumentSnapshot> _stablePosts;
   bool _isCommentsOpen = false;
   bool _initialCommentsHandled = false;
@@ -202,6 +207,19 @@ void initState() {
         _currentIndex < 0 || _currentIndex >= _stablePosts.length) { return null; }
     return _stablePosts[_currentIndex].id;
   });
+  VideoPlaybackRegistry.watch(this, () {
+    if (!_playbackVisible || _stablePosts.isEmpty || _currentIndex >= _stablePosts.length) return null;
+    final doc = _stablePosts[_currentIndex];
+    final url = _getBestUrl(doc);
+    if (url.isEmpty || !_canViewPost(doc)) return null;
+    final id = doc.id;
+    return VideoPlaybackOrigin(
+      engine: widget.isFromProfileGrid ? VideoPlaybackEngine.profile : VideoPlaybackEngine.home,
+      url: url, postId: id,
+      isVisible: () => _playbackVisible && _currentIndex < _stablePosts.length &&
+        _stablePosts[_currentIndex].id == id && _canViewPost(_stablePosts[_currentIndex]),
+    );
+  });
   // [TRASH FILTER - ADDITION] - فلترة المحذوفات أولاً
   _stablePosts = _stablePosts.where((doc) {
     final data = doc.data() as Map<String, dynamic>?;
@@ -306,6 +324,7 @@ void initState() {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _playbackRoute = ModalRoute.of(context);
     // الاعتماد على إشعارات سياسة الجمهور الحية بدلاً من عمر محفوظ في الشاشة.
   }
 
@@ -451,6 +470,7 @@ void initState() {
       _currentIndex = index;
     });
     _scheduleSmartView(_stablePosts[index].id);
+    if (_playbackVisible) {
     try {
       if (!_canViewPost(_stablePosts[index])) {
         TitiProfileEngine().pause();
@@ -475,6 +495,7 @@ void initState() {
       }
       // شلنا الـ Future.delayed 400ms و precache - هو كان سبب التأخير
     } catch (_) {}
+    }
     if (widget.onIndexChanged!= null) {
       widget.onIndexChanged!(index);
     }
@@ -619,12 +640,13 @@ void initState() {
 @override
 void dispose() {
   BannerManager.instance.unwatchVisiblePost(this);
+  VideoPlaybackRegistry.unwatch(this);
   _audience.removeListener(_onAudienceChanged);
   _viewTimer?.cancel();
   _pageController.dispose();
   // Retained feed pages share one engine. A replaced page must not lock the
   // engine already selected by its replacement; route/tab owners handle it.
-  if (widget.isEmbeddedFeed) {
+  if (widget.isEmbeddedFeed || widget.isBannerNavigation) {
     super.dispose();
     return;
   }
@@ -985,6 +1007,10 @@ void dispose() {
                   child: IconButton(
                     icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
                     onPressed: () {
+                      if (widget.isBannerNavigation) {
+                        Navigator.of(context).maybePop();
+                        return;
+                      }
                       if (widget.isFromProfileGrid) {
                         TitiProfileEngine().stop();
                       } else {
