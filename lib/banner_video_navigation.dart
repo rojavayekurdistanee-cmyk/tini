@@ -175,6 +175,7 @@ class BannerVideoNavigation {
     required Widget child,
     required VoidCallback onPushed,
     BannerVideoPlaybackDriver? playback,
+    bool replaceStack = false,
   }) async {
     final origin = VideoPlaybackRegistry.visibleOrigin;
     final port = playback ?? _EnginePlaybackPort();
@@ -197,7 +198,9 @@ class BannerVideoNavigation {
       route = MaterialPageRoute<void>(
         builder: (_) => _BannerPlaybackScope(session: session, child: child),
       );
-      final popped = navigator.push<void>(route);
+      final popped = replaceStack
+          ? navigator.pushAndRemoveUntil<void>(route, (_) => false)
+          : navigator.push<void>(route);
       onPushed(); // Banners remain available while this video is being watched.
       await popped;
       session.close();
