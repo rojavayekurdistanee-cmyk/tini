@@ -695,7 +695,17 @@ void dispose() {
         return Scaffold(
       backgroundColor: titiDarkBG,
       body: RepaintBoundary(
-        child: Stack(
+        child: LayoutBuilder(builder: (context, bodyConstraints) {
+          // Scaffold has already removed the keyboard from these constraints.
+          final visibleHeight = bodyConstraints.maxHeight;
+          final scaledLine = MediaQuery.textScalerOf(context).scale(16) * 1.5;
+          final minimumSheetHeight = scaledLine * 2 + 171;
+          final commentsTop = (visibleHeight * 0.395).clamp(
+            0.0, (visibleHeight - minimumSheetHeight).clamp(0.0, visibleHeight));
+          final commentsVideoHeight = (commentsTop -
+              MediaQuery.viewPaddingOf(context).top - 10).clamp(0.0, screenHeight * 0.355);
+          final commentsHandleHeight = visibleHeight.clamp(0.0, 25.0);
+          return Stack(
           children: [
             PreloadPageView.builder(
               controller: _pageController,
@@ -813,7 +823,7 @@ void dispose() {
                       top: _isCommentsOpen ? MediaQuery.of(context).viewPadding.top + 2 : 0,
                       left: _isCommentsOpen ? screenWidth * 0.225 : 0,
                       width: _isCommentsOpen ? screenWidth * 0.55 : screenWidth,
-                      height: _isCommentsOpen ? screenHeight * 0.355 : screenHeight,
+                      height: _isCommentsOpen ? commentsVideoHeight : screenHeight,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(_isCommentsOpen ? 10 : 0),
                         child: TitiVideoPlayer(
@@ -825,7 +835,7 @@ void dispose() {
                       initialIndex: widget.initialIndex,
                       postProvider: postProvider,
                       screenWidth: _isCommentsOpen ? screenWidth * 0.55 : screenWidth,
-                      screenHeight: _isCommentsOpen ? screenHeight * 0.355 + 45 : screenHeight,
+                      screenHeight: _isCommentsOpen ? commentsVideoHeight + 45 : screenHeight,
                       topBarHeight: _isCommentsOpen || isHomeFeed ? 0 : topBarHeight,
                       bottomBarHeight: _isCommentsOpen ? 0 : effectiveBottomBarHeight,
                       thumbnailUrl: isFirstVideo? widget.thumbnailUrl : (postDoc.data() as Map<String, dynamic>)['thumbnailUrl'] as String?,
@@ -899,7 +909,7 @@ void dispose() {
             // [Tini - Compact Comments Video] - التعليقات الأصلية بدون تغيير شكلها أو منطقها.
             if (_isCommentsOpen && _stablePosts.isNotEmpty) ...[
               Positioned(
-                top: screenHeight * 0.395,
+                top: commentsTop,
                 left: 0,
                 right: 0,
                 bottom: 0,
@@ -916,7 +926,7 @@ void dispose() {
                           if ((details.primaryVelocity ?? 0) > 150) _closeCommentsSheet();
                         },
                         child: SizedBox(
-                          height: 25,
+                          height: commentsHandleHeight,
                           width: double.infinity,
                           child: Center(
                             child: Container(
@@ -944,7 +954,7 @@ void dispose() {
                 top: 0,
                 left: 0,
                 right: 0,
-                height: screenHeight * 0.395,
+                height: commentsTop,
                 child: Stack(
                   children: [
                     Positioned.fill(
@@ -1038,7 +1048,8 @@ void dispose() {
                 ),
               ),
           ],
-        ),
+        );
+        }),
       ),
     );
       },

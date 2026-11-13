@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'dart:io';
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:iconsax/iconsax.dart';
@@ -16,6 +17,124 @@ import 'moderation_service.dart';
 import 'block_service.dart';
 import 'mention_privacy_service.dart';
 import 'throne_earned_badge.dart';
+
+/// Uses the space supplied by the parent, which already accounts for the keyboard.
+class ResponsiveCommentsLayout extends StatelessWidget {
+  final Widget comments;
+  final Widget Function(BuildContext, double) composerBuilder;
+
+  const ResponsiveCommentsLayout({
+    super.key,
+    required this.comments,
+    required this.composerBuilder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final height = constraints.hasBoundedHeight
+            ? constraints.maxHeight
+            : MediaQuery.sizeOf(context).height * 0.85;
+        final lineHeight = MediaQuery.textScalerOf(context).scale(16) * 1.5;
+        final headerHeight = math.min(
+          lineHeight + 30,
+          math.max(0.0, height - 69),
+        );
+        final dividerHeight = math.min(
+          1.0,
+          math.max(0.0, height - headerHeight),
+        );
+        final composerHeight = math.min(
+          math.max(0.0, height - headerHeight - dividerHeight),
+          math.max(68.0, height * 0.55),
+        );
+        return Container(
+          height: height,
+          decoration: const BoxDecoration(
+            color: Color(0xFF0F1720),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              SizedBox(
+                height: headerHeight,
+                child: const SingleChildScrollView(
+                  child: Padding(
+                    padding: EdgeInsets.all(15),
+                    child: Text(
+                      'التعليقات',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(
+                height: dividerHeight,
+                child: const Divider(color: Colors.white12, height: 1),
+              ),
+              Expanded(child: comments),
+              ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: composerHeight),
+                child: SingleChildScrollView(
+                  reverse: true,
+                  child: SafeArea(
+                    top: false,
+                    child: composerBuilder(context, composerHeight),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Long drafts scroll inside the input instead of expanding beyond the sheet.
+class ResponsiveCommentField extends StatelessWidget {
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final double maxHeight;
+  final ValueChanged<String> onChanged;
+
+  const ResponsiveCommentField({
+    super.key,
+    required this.controller,
+    required this.focusNode,
+    required this.maxHeight,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: TextField(
+        controller: controller,
+        focusNode: focusNode,
+        minLines: 1,
+        maxLines: 6,
+        keyboardType: TextInputType.multiline,
+        textInputAction: TextInputAction.newline,
+        onChanged: onChanged,
+        style: const TextStyle(color: Colors.white),
+        decoration: const InputDecoration(
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(vertical: 8),
+          hintText: 'أضف تعليقاً لـ Tini...',
+          hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+          border: InputBorder.none,
+        ),
+      ),
+    );
+  }
+}
 
 class PostCommentsSheet extends StatefulWidget {
   final String? postId;
@@ -623,22 +742,9 @@ for (String tag in postHashtags) {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
-      decoration: const BoxDecoration(
-        color: Color(0xFF0F1720),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(15.0),
-            child: Text("التعليقات",
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-          ),
-          const Divider(color: Colors.white12, height: 1),
-          Expanded(
-            child:!_canLoadStream
+    return ResponsiveCommentsLayout(
+      composerBuilder: (context, maxHeight) => _buildInputArea(maxHeight),
+      comments: !_canLoadStream
         ? const Center(child: CircularProgressIndicator(color: Colors.teal))
                 : StreamBuilder<QuerySnapshot>(
                     stream: _firestore
@@ -742,10 +848,6 @@ for (String tag in postHashtags) {
                       );
                     },
                   ),
-          ),
-          _buildInputArea(),
-        ],
-      ),
     );
   }
 
@@ -1085,23 +1187,23 @@ for (String tag in postHashtags) {
     );
   }
 
-  Widget _buildInputArea() {
+  Widget _buildInputArea(double maxHeight) {
     final auth = Provider.of<custom.AuthProvider>(context);
     
     // [NEW] اذا التعليقات مغلقة اعرض رسالة بدل حقل الكتابة
     if (_privacyLoaded && !_canCurrentUserComment()) {
       return Container(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom + 15, left: 15, right: 15, top: 15),
+        padding: const EdgeInsets.all(15),
         decoration: const BoxDecoration(color: Color(0xFF1A222C), border: Border(top: BorderSide(color: Colors.white12))),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(_commentPrivacy == 'comment_nobody' ? Icons.block : Icons.people_outline, color: Colors.white38, size: 18),
             const SizedBox(width: 8),
-            Text(
+            Expanded(child: Text(
               _commentPrivacy == 'comment_nobody' ? "التعليقات معطلة من صاحب المنشور" : "التعليقات للأصدقاء فقط - يجب أن تتابعوا بعضكم",
               style: const TextStyle(color: Colors.white38, fontSize: 13),
-            ),
+            )),
           ],
         ),
       );
@@ -1112,7 +1214,7 @@ for (String tag in postHashtags) {
       children: [
         if (_mentionSuggestions.isNotEmpty)
           Container(
-            constraints: const BoxConstraints(maxHeight: 190),
+            constraints: BoxConstraints(maxHeight: math.min(190, maxHeight * 0.35)),
             color: const Color(0xFF1A222C),
             child: ListView.builder(
               shrinkWrap: true,
@@ -1138,8 +1240,7 @@ for (String tag in postHashtags) {
             color: Colors.black26,
             child: Row(
               children: [
-                Text(_editingCommentId!= null? "تعديل تعليقك..." : "الرد على $_replyingToName", style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                const Spacer(),
+                Expanded(child: Text(_editingCommentId!= null? "تعديل تعليقك..." : "الرد على $_replyingToName", maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.grey, fontSize: 12))),
                 GestureDetector(
                   onTap: () => setState(() { _replyingToId = null; _replyingToName = null; _editingCommentId = null; _linkedCommentMentions.clear(); _clearMentionSuggestions(); _commentController.clear(); }),
                   child: const Icon(Icons.close, color: Colors.grey, size: 16),
@@ -1148,18 +1249,18 @@ for (String tag in postHashtags) {
             ),
           ),
         Container(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom + 10, left: 10, right: 10, top: 10),
+          padding: const EdgeInsets.all(10),
           decoration: const BoxDecoration(color: Color(0xFF1A222C), border: Border(top: BorderSide(color: Colors.white12))),
           child: Row(
             children: [
               CircleAvatar(radius: 18, backgroundColor: Colors.grey, backgroundImage: _getAvatar(auth.profileImg)),
               const SizedBox(width: 10),
               Expanded(
-                child: TextField(
-                  controller: _commentController, focusNode: _commentFocusNode, maxLines: null,
+                child: ResponsiveCommentField(
+                  controller: _commentController,
+                  focusNode: _commentFocusNode,
+                  maxHeight: math.max(48, maxHeight - 20),
                   onChanged: _onCommentTextChanged,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(hintText: "أضف تعليقاً لـ Tini...", hintStyle: TextStyle(color: Colors.grey, fontSize: 14), border: InputBorder.none),
                 ),
               ),
               _isSending
