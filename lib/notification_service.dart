@@ -23,6 +23,7 @@ import 'dart:convert';
 import 'chat_screen.dart'; // <-- اضافة جديدة للشات
 import 'messages_tab.dart'; // <-- صندوق الوارد
 import 'banner_video_navigation.dart';
+import 'notification_navigation.dart';
 import 'group_chat_screen.dart';
 import 'audience_access.dart';
 
@@ -157,9 +158,8 @@ class NotificationService {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     Future.delayed(const Duration(milliseconds: 1400), () {
       if (isFromTerminated) {
-        navigatorKey.currentState?.pushAndRemoveUntil(
+        _openColdNotification(
           MaterialPageRoute(builder: (_) => const VisitsScreen()),
-          (route) => false,
         );
       } else {
         navigatorKey.currentState?.push(
@@ -175,9 +175,8 @@ class NotificationService {
   WidgetsBinding.instance.addPostFrameCallback((_) {
     Future.delayed(const Duration(milliseconds: 1400), () {
       if (isFromTerminated) {
-        navigatorKey.currentState?.pushAndRemoveUntil(
+        _openColdNotification(
           MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUid)),
-          (route) => false,
         );
       } else {
         navigatorKey.currentState?.push(
@@ -194,15 +193,14 @@ class NotificationService {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future.delayed(const Duration(milliseconds: 1400), () {
           if (isFromTerminated) {
-            navigatorKey.currentState?.pushAndRemoveUntil(
+            _openColdNotification(
               MaterialPageRoute(builder: (_) => ChatScreen(
                 viewedUid: fromUid,
                 displayFullName: 'مستخدم',
                 displayProfileImg: '',
                 isFriend: false,
               )),
-              (route) => false,
-            );
+          );
           } else {
             navigatorKey.currentState?.push(
               MaterialPageRoute(builder: (_) => ChatScreen(
@@ -211,7 +209,7 @@ class NotificationService {
                 displayProfileImg: '',
                 isFriend: false,
               )),
-            );
+          );
           }
         });
       });
@@ -223,9 +221,8 @@ class NotificationService {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future.delayed(const Duration(milliseconds: 1400), () {
           if (isFromTerminated) {
-            navigatorKey.currentState?.pushAndRemoveUntil(
+            _openColdNotification(
               MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: groupId)),
-              (route) => false,
             );
           } else {
             navigatorKey.currentState?.push(
@@ -276,9 +273,8 @@ class NotificationService {
             // اذا view افتح VisitsScreen
       if (type == "view") {
   if (isFromTerminated) {
-    navigatorKey.currentState?.pushAndRemoveUntil(
+    _openColdNotification(
       MaterialPageRoute(builder: (_) => const VisitsScreen()),
-      (route) => false,
     );
   } else {
     navigatorKey.currentState?.push(
@@ -290,9 +286,8 @@ class NotificationService {
       // --- تعديل جديد: اذا follow افتح البروفايل ---
       if (type == "follow" && fromUid.isNotEmpty) {
   if (isFromTerminated) {
-    navigatorKey.currentState?.pushAndRemoveUntil(
+    _openColdNotification(
       MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUid)),
-      (route) => false,
     );
   } else {
     navigatorKey.currentState?.push(
@@ -305,14 +300,13 @@ class NotificationService {
                                                 // --- اذا رسالة شات خاص ---
       if ((type == "message" || type == "chat") && fromUid.isNotEmpty) {
         if (isFromTerminated) {
-          navigatorKey.currentState?.pushAndRemoveUntil(
+          _openColdNotification(
             MaterialPageRoute(builder: (_) => ChatScreen(
               viewedUid: fromUid,
               displayFullName: 'مستخدم',
               displayProfileImg: '',
               isFriend: false,
             )),
-            (route) => false,
           );
         } else {
           navigatorKey.currentState?.push(
@@ -330,10 +324,9 @@ class NotificationService {
       // --- اذا رسالة جروب ---
       if (type == "group" && groupId.isNotEmpty) {
         if (isFromTerminated) {
-          navigatorKey.currentState?.pushAndRemoveUntil(
+          _openColdNotification(
             MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: groupId)),
-            (route) => false,
-          );
+            );
         } else {
           navigatorKey.currentState?.push(
             MaterialPageRoute(builder: (_) => GroupChatScreen(groupId: groupId)),
@@ -376,6 +369,16 @@ class NotificationService {
     }
   }
 
+  void _openColdNotification(Route<void> destination) {
+    final navigator = navigatorKey.currentState;
+    if (navigator == null || !navigator.mounted) return;
+    NotificationNavigation.pushCold<void>(
+      navigator: navigator,
+      destination: destination,
+      homeBuilder: (_) => const HomeScreen(),
+    );
+  }
+
   // Every external video entry point uses the same ownership handoff as the
   // in-app video banners. A non-video return destination must remain silent.
   Future<void> _openNotificationPost(
@@ -400,6 +403,7 @@ class NotificationService {
       navigator: navigator,
       url: url,
       replaceStack: isFromTerminated,
+      replacementRootBuilder: (_) => const HomeScreen(),
       onPushed: () {},
       child: PostViewScreen(
         posts: [doc],

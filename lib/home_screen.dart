@@ -77,17 +77,26 @@ class HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMi
     super.initState();
     _audience.addListener(_onAudienceChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // فك قفل مباشر بعد النشر - ما بيلغي ميزة كتم الصوت
-      try {
-        await TitiSingleEngine().emergencyUnlock();
-        await TitiProfileEngine().unlock();
-        final String cur = TitiSingleEngine().currentUrl;
-        if (cur.isNotEmpty) {
-          await TitiSingleEngine().playUrl(cur);
-        } else {
-          await TitiSingleEngine().forceResumeForTab();
-        }
-      } catch (_) {}
+      if (!mounted) return;
+      // A cold notification can create Home underneath another route.
+      // Start its audio only when Home is actually visible.
+      if (_isHomeFeedVisible) {
+        try {
+          await TitiSingleEngine().emergencyUnlock();
+          if (mounted && _isHomeFeedVisible) {
+            await TitiProfileEngine().unlock();
+            if (mounted && _isHomeFeedVisible) {
+              final String cur = TitiSingleEngine().currentUrl;
+              if (cur.isNotEmpty) {
+                await TitiSingleEngine().playUrl(cur);
+              } else {
+                await TitiSingleEngine().forceResumeForTab();
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      if (!mounted) return;
       context.read<ChatProvider>().startFollowRequestsListener();
       context.read<ChatProvider>().startActivitiesListener();
       // [Two-Way Block] - مزامنة الحظر مع post_provider - هاد اللي بيخلي الفيد ما يطلع عند المحظور

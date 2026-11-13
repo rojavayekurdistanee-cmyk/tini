@@ -5,6 +5,7 @@ import 'audience_access.dart';
 import 'titi_single_engine.dart';
 import 'titi_profile_engine.dart';
 import 'video_playback_handoff.dart';
+import 'notification_navigation.dart';
 
 abstract class BannerVideoPlaybackDriver implements VideoPlaybackPort {
   VideoPlaybackQueue get operations;
@@ -176,6 +177,7 @@ class BannerVideoNavigation {
     required VoidCallback onPushed,
     BannerVideoPlaybackDriver? playback,
     bool replaceStack = false,
+    WidgetBuilder? replacementRootBuilder,
   }) async {
     final origin = VideoPlaybackRegistry.visibleOrigin;
     final port = playback ?? _EnginePlaybackPort();
@@ -199,7 +201,13 @@ class BannerVideoNavigation {
         builder: (_) => _BannerPlaybackScope(session: session, child: child),
       );
       final popped = replaceStack
-          ? navigator.pushAndRemoveUntil<void>(route, (_) => false)
+          ? replacementRootBuilder == null
+                ? navigator.pushAndRemoveUntil<void>(route, (_) => false)
+                : NotificationNavigation.pushCold<void>(
+                    navigator: navigator,
+                    destination: route,
+                    homeBuilder: replacementRootBuilder,
+                  )
           : navigator.push<void>(route);
       onPushed(); // Banners remain available while this video is being watched.
       await popped;
@@ -221,7 +229,11 @@ class BannerVideoNavigation {
           : VideoPlaybackRegistry.visibleOrigin;
       final snapshot = identical(currentOrigin, origin)
           ? original
-          : (currentOrigin == null ? null : port.capture(currentOrigin));
+          : (currentOrigin == null
+                ? null
+                : (replaceStack
+                      ? port.capture(currentOrigin)?.withPlaying(true)
+                      : port.capture(currentOrigin)));
       bool canRestore() =>
           viewer != null &&
           port.viewer == viewer &&
