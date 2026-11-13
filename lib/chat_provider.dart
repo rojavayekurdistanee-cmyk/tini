@@ -227,6 +227,10 @@ class ChatProvider extends ChangeNotifier {
       .snapshots()
       .listen((snap) {
       if (!_sessionIs(uid, generation)) return;
+      _activityFollowers
+        ..clear()
+        ..addAll(snap.docs.map((doc) => doc.id));
+      _syncActivityFriends();
       final newCount = snap.docs.length;
 
       // أول مرة: خد العدد الحالي كمرجع ولا تحسبه
@@ -263,10 +267,19 @@ class ChatProvider extends ChangeNotifier {
   StreamSubscription? _bannerAuthSub;
   bool _disposed = false;
   int _bannerGeneration = 0;
+  bool _bannerReady = false;
+  DateTime? _bannerSessionStartedAt;
+  final BannerPresenceState _presence = BannerPresenceState();
+  Set<String> get _activityFollowers => _presence.followers;
+  Set<String> get _activityFollowing => _presence.following;
+  Map<String, bool> get _onlineStates => _presence.online;
+  String _presenceSignature = '';
+  int _presenceRevision = 0;
   Future<void> _bannerWork = Future.value();
   final Map<String, Map<String, dynamic>> _bannerUsers = {};
   final Map<String, DateTime> _bannerUserFetchedAt = {};
   final Map<String, DateTime> _verifiedBannerPosts = {};
+  final Map<String, int> _unreadBannerVersions = {};
 
   bool _sessionIs(String uid, int generation) => !_disposed &&
       _auth.currentUser?.uid == uid && _currentUid == uid && generation == _bannerGeneration;
@@ -282,6 +295,7 @@ class ChatProvider extends ChangeNotifier {
     if (!_sessionIs(uid, generation)) return;
     final at = data['timestamp'];
     final actor = (data['fromUid'] ?? data['visitorId'])?.toString() ?? '';
+    if (type != BannerType.activity && at is Timestamp && _unreadBannerVersions[eventId] != at.microsecondsSinceEpoch) return;
     if (at is! Timestamp || actor.isEmpty || actor == uid || isBlocked(actor) ||
         DateTime.now().difference(at.toDate()) > BannerPolicy.expiry || !_bannerManager.enabled(type)) { return; }
     // Reuse a short verification window for bursts on the same post.
@@ -312,17 +326,60 @@ class ChatProvider extends ChangeNotifier {
       _bannerUserFetchedAt[actor] = DateTime.now();
     }
     if (!_sessionIs(uid, generation) || isBlocked(actor)) return;
+    if (type != BannerType.activity && _unreadBannerVersions[eventId] != at.microsecondsSinceEpoch) return;
     _bannerManager.submit(BannerEvent(eventId, type, {
       ...data, 'uid': actor, 'name': user['fullName'] ?? user['username'] ?? 'مستخدم',
       'img': user['profileImg'] ?? '', 'activityType': data['type'],
     }, at.toDate()));
   }
 
+  Future<void> _seedUnreadBanners(String uid, int generation,
+      List<({String id, BannerType type, Map<String, dynamic> data})> records) async {
+    if (!_sessionIs(uid, generation) || records.isEmpty) return;
+    final now = DateTime.now();
+    records = records.where((record) {
+      final at = record.data['timestamp'];
+      return at is Timestamp && _unreadBannerVersions[record.id] == at.microsecondsSinceEpoch && now.difference(at.toDate()) <= const Duration(days: 2) &&
+        _bannerManager.enabled(record.type);
+    }).toList();
+    final actors = records.map((record) => (record.data['fromUid'] ?? record.data['visitorId'])?.toString() ?? '')
+      .where((actor) => actor.isNotEmpty && actor != uid && !isBlocked(actor)).toSet().toList();
+    final profiles = <String, Map<String, dynamic>>{};
+    // Bounded parallel batches avoid an individual profile request per record.
+    for (var offset = 0; offset < actors.length; offset += 40) {
+      final page = actors.skip(offset).take(40).toList();
+      final requests = <Future<void>>[];
+      for (var i = 0; i < page.length; i += 10) {
+        final ids = page.skip(i).take(10).toList();
+        requests.add(() async {
+          try {
+            final snapshot = await _firestore.collection('public_profiles')
+              .where(FieldPath.documentId, whereIn: ids).get();
+            if (!_sessionIs(uid, generation)) return;
+            for (final doc in snapshot.docs) { profiles[doc.id] = doc.data(); }
+          } catch (error) { debugPrint('Unread banner profiles unavailable: $error'); }
+        }());
+      }
+      await Future.wait(requests);
+      if (!_sessionIs(uid, generation)) return;
+    }
+    for (final record in records) {
+      final actor = (record.data['fromUid'] ?? record.data['visitorId'])?.toString() ?? '';
+      final profile = profiles[actor];
+      final at = record.data['timestamp'] as Timestamp;
+      if (profile == null || isBlocked(actor) || _unreadBannerVersions[record.id] != at.microsecondsSinceEpoch) continue;
+      _bannerManager.seed(BannerEvent(record.id, record.type, {
+        ...record.data, 'uid': actor, 'name': profile['fullName'] ?? profile['username'] ?? 'مستخدم',
+        'img': profile['profileImg'] ?? '', 'activityType': record.data['type'],
+      }, (record.data['timestamp'] as Timestamp).toDate()));
+    }
+  }
+
   void startActivitiesListener() {
     final uid = _auth.currentUser?.uid;
-    if (_disposed || uid == null || _currentUid != uid || _activitiesSub != null) return;
+    if (_disposed || uid == null || _currentUid != uid || !_bannerReady || _activitiesSub != null) return;
     final generation = _bannerGeneration;
-    final baseline = <String>{};
+    final cursor = BannerSnapshotCursor(_bannerSessionStartedAt ?? DateTime.now());
     var initialized = false;
     _activitiesSub = _firestore.collection('activities')
       .where('toUid', isEqualTo: uid).where('seen', isEqualTo: false)
@@ -337,26 +394,44 @@ class ChatProvider extends ChangeNotifier {
           'postId': snapshot.docs.first.data()['postId'],
         };
         notifyListeners();
-        // Establish a server baseline, including cached records, before presenting.
-        if (!initialized) {
-          baseline.addAll(snapshot.docs.map((d) => d.id));
-          if (!snapshot.metadata.isFromCache && !snapshot.metadata.hasPendingWrites) initialized = true;
-          return;
+        if (snapshot.metadata.isFromCache) return;
+        _unreadBannerVersions.removeWhere((key, _) => key.startsWith('activity:'));
+        for (final doc in snapshot.docs) {
+          final at = doc.data()['timestamp'];
+          if (at is Timestamp && !doc.metadata.hasPendingWrites) _unreadBannerVersions['activity:${doc.id}'] = at.microsecondsSinceEpoch;
         }
+
+        final firstServerSnapshot = !initialized;
+        if (!snapshot.metadata.hasPendingWrites) {
+          _bannerManager.reconcileActivities(snapshot.docs.map((doc) => doc.id).toSet());
+        }
+        if (firstServerSnapshot) {
+          final historical = <({String id, BannerType type, Map<String, dynamic> data})>[];
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final at = data['timestamp'];
+            final type = bannerTypeForActivity(data['type']);
+            if (type != null && at is Timestamp && !doc.metadata.hasPendingWrites &&
+                at.toDate().isBefore(_bannerSessionStartedAt ?? DateTime.now())) {
+              historical.add((id: 'activity:${doc.id}', type: type, data: data));
+            }
+          }
+          _queueBannerWork(() => _seedUnreadBanners(uid, generation, historical));
+        }
+
+        final candidates = firstServerSnapshot ? snapshot.docs : snapshot.docChanges
+          .where((change) => change.type != DocumentChangeType.removed).map((change) => change.doc);
+        if (!snapshot.metadata.hasPendingWrites) initialized = true;
         for (final change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.removed) continue;
-          final doc = change.doc;
-          if (doc.metadata.hasPendingWrites || baseline.contains(doc.id)) continue;
+          if (change.type == DocumentChangeType.removed) _bannerManager.removeEvent('activity:${change.doc.id}');
+        }
+        for (final doc in candidates) {
           final data = doc.data();
-          if (data == null || data['timestamp'] is! Timestamp) continue;
-          baseline.add(doc.id);
-          // Bound listener-local deduplication; persistent policy handles reconnects.
-          if (baseline.length > 3000) baseline.remove(baseline.first);
-          final type = switch (data['type']) {
-            'like' => BannerType.like, 'comment' || 'reply' => BannerType.comment,
-            'follow' => BannerType.follow, 'mention' => BannerType.mention,
-            'story_new' => BannerType.story, _ => null,
-          };
+          final at = data?['timestamp'];
+          if (data == null || at is! Timestamp || !cursor.accept(doc.id, at.toDate(),
+              fromCache: doc.metadata.isFromCache, pendingWrites: doc.metadata.hasPendingWrites,
+              firstServerSnapshot: firstServerSnapshot)) { continue; }
+          final type = bannerTypeForActivity(data['type']);
           if (type != null) _queueBannerWork(() => _submitBanner(uid, generation, 'activity:${doc.id}', type, data));
         }
       }, onError: (Object e) => debugPrint('Activities listener: $e'));
@@ -364,27 +439,53 @@ class ChatProvider extends ChangeNotifier {
 
   void startVisitsListener() {
     final uid = _auth.currentUser?.uid;
-    if (_disposed || uid == null || _currentUid != uid || _visitsSub != null) return;
+    if (_disposed || uid == null || _currentUid != uid || !_bannerReady || _visitsSub != null) return;
     final generation = _bannerGeneration;
-    final versions = <String, int>{};
+    final cursor = BannerSnapshotCursor(_bannerSessionStartedAt ?? DateTime.now());
     var initialized = false;
     _visitsSub = _firestore.collection('users').doc(uid).collection('visits')
       .where('isSeen', isEqualTo: false).orderBy('timestamp', descending: true)
       .snapshots(includeMetadataChanges: true).listen((snapshot) {
         if (!_sessionIs(uid, generation)) return;
+        if (snapshot.metadata.isFromCache) return;
+        _unreadBannerVersions.removeWhere((key, _) => key.startsWith('visit:'));
+        for (final doc in snapshot.docs) {
+          final at = doc.data()['timestamp'];
+          if (at is Timestamp && !doc.metadata.hasPendingWrites) _unreadBannerVersions['visit:${doc.id}:${at.microsecondsSinceEpoch}'] = at.microsecondsSinceEpoch;
+        }
+        if (!snapshot.metadata.hasPendingWrites) _bannerManager.reconcileVisits(snapshot.docs.map((doc) => doc.id).toSet());
+
+        final firstServerSnapshot = !initialized;
+        if (firstServerSnapshot) {
+          final historical = <({String id, BannerType type, Map<String, dynamic> data})>[];
+          for (final doc in snapshot.docs) {
+            final data = doc.data(); final at = data['timestamp'];
+            if (at is Timestamp && !doc.metadata.hasPendingWrites &&
+                at.toDate().isBefore(_bannerSessionStartedAt ?? DateTime.now())) {
+              historical.add((id: 'visit:${doc.id}:${at.microsecondsSinceEpoch}', type: BannerType.visit, data: data));
+            }
+          }
+          _queueBannerWork(() => _seedUnreadBanners(uid, generation, historical));
+        }
+
+        final candidates = firstServerSnapshot ? snapshot.docs : snapshot.docChanges
+          .where((change) => change.type != DocumentChangeType.removed).map((change) => change.doc);
+        if (!snapshot.metadata.hasPendingWrites) initialized = true;
         for (final change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.removed) continue;
-          final doc = change.doc;
+          if (change.type == DocumentChangeType.removed) {
+            final actor = change.doc.id;
+            _bannerManager.removeVisitsBy(actor);
+          }
+        }
+        for (final doc in candidates) {
           final data = doc.data();
           final at = data?['timestamp'];
-          if (at is! Timestamp || doc.metadata.hasPendingWrites) continue;
+          if (data == null || at is! Timestamp || !cursor.accept(doc.id, at.toDate(),
+              fromCache: doc.metadata.isFromCache, pendingWrites: doc.metadata.hasPendingWrites,
+              firstServerSnapshot: firstServerSnapshot)) { continue; }
           final version = at.microsecondsSinceEpoch;
-          final previous = versions[doc.id];
-          versions[doc.id] = version;
-          if (!initialized || previous == version) continue;
-          if (versions.length > 3000) versions.remove(versions.keys.first);
           _queueBannerWork(() => _submitBanner(uid, generation,
-            'visit:${doc.id}:$version', BannerType.visit, data!));
+            'visit:${doc.id}:$version', BannerType.visit, data));
         }
         if (!snapshot.metadata.isFromCache && !snapshot.metadata.hasPendingWrites) initialized = true;
       }, onError: (Object e) => debugPrint('Visits listener: $e'));
@@ -431,6 +532,12 @@ class ChatProvider extends ChangeNotifier {
       final uid = user?.uid;
       if (_disposed || (uid == _currentUid && uid != null)) return;
       final generation = ++_bannerGeneration;
+      _bannerReady = false;
+      _unreadBannerVersions.clear();
+      _bannerSessionStartedAt = DateTime.now();
+      _presenceRevision++;
+      _presenceSignature = '';
+      _activityFollowers.clear(); _activityFollowing.clear(); _onlineStates.clear();
       _currentUid = uid;
       _bannerWork = Future.value();
       _followersSub?.cancel(); _followersSub = null;
@@ -449,6 +556,7 @@ class ChatProvider extends ChangeNotifier {
       if (uid == null || !_sessionIs(uid, generation)) return;
       await loadBlockedIds();
       if (!_sessionIs(uid, generation)) return;
+      _bannerReady = true;
       _bannerManager.foregroundActivity = (payload) async {
         if (!_sessionIs(uid, generation)) return false;
         final id = payload['activityId']?.toString() ?? '';
@@ -457,13 +565,11 @@ class ChatProvider extends ChangeNotifier {
           final doc = await _firestore.collection('activities').doc(id).get();
           final data = doc.data();
           if (!_sessionIs(uid, generation) || data == null || data['toUid'] != uid) return false;
-          final type = switch (data['type']) {
-            'like' => BannerType.like, 'comment' || 'reply' => BannerType.comment,
-            'follow' => BannerType.follow, 'mention' => BannerType.mention,
-            _ => null,
-          };
+          final type = bannerTypeForActivity(data['type']);
           if (type == null) return false;
           if (data['seen'] == true) return true;
+          final at = data['timestamp'];
+          if (at is Timestamp) _unreadBannerVersions['activity:$id'] = at.microsecondsSinceEpoch;
           _queueBannerWork(() => _submitBanner(uid, generation, 'activity:$id', type, data));
           return true;
         } catch (_) { return false; }
@@ -475,6 +581,7 @@ class ChatProvider extends ChangeNotifier {
   }
 
   void clearLastFollower() {
+    _bannerManager.clearTypes({BannerType.follow});
     _lastFollower = null;
     _pendingFollowRequests = 0;
     notifyListeners();
@@ -1377,56 +1484,72 @@ class ChatProvider extends ChangeNotifier {
 
   void startActivityOnlineListener() {
     final uid = _auth.currentUser?.uid;
-    if (_disposed || uid == null || _currentUid != uid || _followingSub != null) return;
+    if (_disposed || uid == null || _currentUid != uid || !_bannerReady || _followingSub != null) return;
     final generation = _bannerGeneration;
-    var followingVersion = 0;
-    _followingSub = _firestore.collection('users').doc(uid).collection('following').snapshots().listen((snap) async {
-      final version = ++followingVersion;
-      bool valid() => _sessionIs(uid, generation) && version == followingVersion;
-      if (!valid()) return;
-      for (final sub in _friendStatusListeners.values) { sub.cancel(); }
-      _friendStatusListeners.clear();
-      final friends = <String>[];
-      for (final doc in snap.docs) {
-        if (doc.id == uid) continue;
-        try {
-          final follower = await _firestore.collection('users').doc(uid).collection('followers').doc(doc.id).get();
-          if (!valid()) return;
-          if (follower.exists) friends.add(doc.id);
-        } catch (error) {
-          if (!valid()) return;
-          debugPrint('Friend status unavailable: $error');
-        }
-      }
-      for (var i = 0; i < friends.length; i += 10) {
-        final batch = friends.skip(i).take(10).toList();
-        final statuses = <String, bool>{};
-        var initialized = false;
-        final sub = _firestore.collection('public_profiles')
-          .where(FieldPath.documentId, whereIn: batch)
-          .snapshots(includeMetadataChanges: true).listen((snapshot) {
-            if (!valid() || (initialized && snapshot.metadata.isFromCache)) return;
-            for (final doc in snapshot.docs) {
-              final data = doc.data();
-              final online = data['isOnline'] == true;
-              final previous = statuses[doc.id];
-              statuses[doc.id] = online;
-              if (!initialized || snapshot.metadata.isFromCache || doc.metadata.hasPendingWrites || previous != false || !online) continue;
-              final now = DateTime.now();
-              final day = now.toIso8601String().split('T').first;
-              final actor = doc.id;
-              _queueBannerWork(() async {
-                if (!valid() || isBlocked(actor)) return;
-                // Persistent event identity enforces once per friend per calendar day.
-                await _submitBanner(uid, generation, 'online:$actor:$day', BannerType.activity,
-                  {...data, 'fromUid': actor, 'timestamp': Timestamp.fromDate(now)});
-              });
+    _followingSub = _firestore.collection('users').doc(uid).collection('following')
+      .snapshots().listen((snapshot) {
+        if (!_sessionIs(uid, generation)) return;
+        _activityFollowing
+          ..clear()
+          ..addAll(snapshot.docs.map((doc) => doc.id));
+        _syncActivityFriends();
+      }, onError: (Object error) => debugPrint('Following presence listener: $error'));
+  }
+
+  void _syncActivityFriends() {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null || !_bannerReady || _disposed) return;
+    final friends = _presence.friends;
+    final signature = friends.join(',');
+    if (_presenceSignature == signature) return;
+    _presenceSignature = signature;
+    debugPrint('[Banner] mutual friends watched: ${friends.length}');
+    final revision = ++_presenceRevision;
+    final generation = _bannerGeneration;
+    bool valid() => _sessionIs(uid, generation) && revision == _presenceRevision;
+    for (final sub in _friendStatusListeners.values) { sub.cancel(); }
+    _friendStatusListeners.clear();
+    for (final removed in _onlineStates.keys.where((actor) => !friends.contains(actor)).toList()) {
+      _onlineStates.remove(removed);
+      _bannerManager.removeOnlineActor(removed);
+    }
+    for (var i = 0; i < friends.length; i += 10) {
+      final batch = friends.skip(i).take(10).toList();
+      _friendStatusListeners[batch.join(',')] = _firestore.collection('public_profiles')
+        .where(FieldPath.documentId, whereIn: batch)
+        .snapshots(includeMetadataChanges: true).listen((snapshot) {
+          if (!valid() || snapshot.metadata.isFromCache) return;
+          if (snapshot.docs.isEmpty) debugPrint('[Banner] No public presence documents; check syncPublicProfile deployment.');
+          for (final change in snapshot.docChanges) {
+            if (change.type == DocumentChangeType.removed && !change.doc.metadata.hasPendingWrites) {
+              _onlineStates[change.doc.id] = false;
+              _bannerManager.removeOnlineActor(change.doc.id);
             }
-            if (!snapshot.metadata.isFromCache && !snapshot.metadata.hasPendingWrites) initialized = true;
-          }, onError: (Object e) => debugPrint('Online listener: $e'));
-        _friendStatusListeners[batch.join('_')] = sub;
-      }
-    }, onError: (Object e) => debugPrint('Following listener: $e'));
+          }
+          for (final doc in snapshot.docs) {
+            if (doc.metadata.hasPendingWrites) continue;
+            final data = doc.data();
+            final actor = doc.id;
+            final online = data['showActivityStatus'] != false && data['isOnline'] == true;
+            final previous = _onlineStates[actor];
+            if (previous == null && data['showActivityStatus'] != false && !data.containsKey('isOnline')) {
+              debugPrint('[Banner] Missing public isOnline; check syncPublicProfile deployment.');
+            }
+            final seenAt = data['lastSeen'];
+            final changed = _presence.observe(actor, isOnline: online,
+              sessionStartedAt: _bannerSessionStartedAt ?? DateTime.now(),
+              lastSeen: seenAt is Timestamp ? seenAt.toDate() : null);
+            if (!online) { _bannerManager.removeOnlineActor(actor); continue; }
+            if (!changed) continue;
+            final at = seenAt is Timestamp ? seenAt : Timestamp.now();
+            _queueBannerWork(() async {
+              if (!valid() || _onlineStates[actor] != true || isBlocked(actor)) return;
+              await _submitBanner(uid, generation, 'online:$actor:${at.microsecondsSinceEpoch}',
+                BannerType.activity, {...data, 'fromUid': actor, 'timestamp': at});
+            });
+          }
+        }, onError: (Object error) => debugPrint('Public presence listener: $error'));
+    }
   }
 
   @override

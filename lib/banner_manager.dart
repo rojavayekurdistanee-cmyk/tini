@@ -17,6 +17,8 @@ class BannerManager {
   Timer? _persistTimer;
   Future<void> _writes = Future.value();
   bool Function(BannerItem)? canPresent;
+  bool Function(String)? actorAllowed;
+  bool Function(BannerItem)? readyToPresent;
   final Map<Object, String? Function()> _visiblePosts = {};
   void watchVisiblePost(Object owner, String? Function() selected) =>
       _visiblePosts[owner] = selected;
@@ -34,6 +36,7 @@ class BannerManager {
           'reply',
           'follow',
           'mention',
+          'duet',
         }.contains(data['type'])) {
       return false;
     }
@@ -108,6 +111,22 @@ class BannerManager {
         }
       }
     }
+    try {
+      final stored =
+          jsonDecode(prefs.getString('banner_groups:$uid') ?? '[]') as List;
+      for (final value in stored.take(30)) {
+        try {
+          final group = BannerItem.fromJson(
+            Map<String, dynamic>.from(value as Map),
+          );
+          policy.groups[group.groupKey] = group;
+        } catch (_) {
+          /* One malformed group must not hide other groups. */
+        }
+      }
+    } catch (_) {
+      /* Local grouping state can be rebuilt from new events. */
+    }
     policy.restore(DateTime.now());
     _save();
     _timer = Timer.periodic(const Duration(milliseconds: 250), (_) => _tick());
@@ -129,17 +148,139 @@ class BannerManager {
   bool _eligible(BannerItem item) =>
       enabled(item.type) && (canPresent?.call(item) ?? true);
   void _tick() {
-    final previous = policy.current;
-    policy.tick(DateTime.now(), eligible: _eligible);
-    if (!identical(previous, policy.current)) {
-      currentBanner.value = policy.current;
+    if (policy.current == null &&
+        policy.pending.isEmpty &&
+        currentBanner.value == null) {
+      return;
+    }
+    final allowed = actorAllowed;
+    if (allowed != null) {
+      final blockedEvents = policy.groups.values
+          .expand((group) => group.events.entries)
+          .where((entry) => !allowed(entry.value['uid'] as String))
+          .map((entry) => entry.key)
+          .toList();
+      for (final id in blockedEvents) {
+        policy.removeEvent(id);
+      }
+      if (blockedEvents.isNotEmpty) _save();
+    }
+    final rendered = currentBanner.value;
+    if (rendered != null &&
+        (!_eligible(rendered) || !(readyToPresent?.call(rendered) ?? true))) {
+      policy.dismiss(DateTime.now());
+      currentBanner.value = null;
+      _save();
+    }
+    policy.tick(
+      DateTime.now(),
+      eligible: _eligible,
+      readyToPresent: readyToPresent,
+    );
+    final next = policy.current;
+    if (!identical(currentBanner.value, next) &&
+        (next == null ||
+            (_eligible(next) && (readyToPresent?.call(next) ?? true)))) {
+      currentBanner.value = next;
+      _save();
+    }
+  }
+
+  void seed(BannerEvent event) {
+    if (_uid == null ||
+        _prefs == null ||
+        !enabled(event.type) ||
+        !(actorAllowed?.call(event.actor) ?? true)) {
+      return;
+    }
+    policy.seed(event, DateTime.now());
+    _save();
+  }
+
+  void reconcileVisits(Set<String> activeVisitors) {
+    final visitors = policy.groups.values
+        .where((group) => group.type == BannerType.visit)
+        .expand((group) => group.actors.keys)
+        .where((actor) => !activeVisitors.contains(actor))
+        .toList();
+    for (final actor in visitors) {
+      removeVisitsBy(actor);
+    }
+  }
+
+  void reconcileActivities(Set<String> activeIds) {
+    final stale = policy.groups.values
+        .expand((group) => group.eventIds)
+        .where(
+          (id) =>
+              id.startsWith('activity:') &&
+              !activeIds.contains(id.substring(9)),
+        )
+        .toList();
+    for (final id in stale) {
+      policy.removeEvent(id);
+    }
+    if (stale.isNotEmpty) {
+      _tick();
       _save();
     }
   }
 
   void submit(BannerEvent event) {
-    if (_uid == null || _prefs == null || !enabled(event.type)) return;
-    if (policy.add(event, DateTime.now())) currentBanner.value = policy.current;
+    if (_uid == null ||
+        _prefs == null ||
+        !enabled(event.type) ||
+        !(actorAllowed?.call(event.actor) ?? true)) {
+      return;
+    }
+    final accepted = policy.add(event, DateTime.now());
+    final item = policy.current;
+    if (accepted &&
+        (item == null ||
+            (_eligible(item) && (readyToPresent?.call(item) ?? true)))) {
+      currentBanner.value = item;
+    }
+    _save();
+  }
+
+  void _removeActor(BannerType type, String actor) {
+    final ids = policy.groups.values
+        .where((group) => group.type == type)
+        .expand(
+          (group) => group.events.entries
+              .where((entry) => entry.value['uid'] == actor)
+              .map((entry) => entry.key),
+        )
+        .toList();
+    for (final id in ids) {
+      policy.removeEvent(id);
+    }
+    if (ids.isNotEmpty) {
+      _tick();
+      _save();
+    }
+  }
+
+  void removeVisitsBy(String actor) => _removeActor(BannerType.visit, actor);
+  void removeOnlineActor(String actor) =>
+      _removeActor(BannerType.activity, actor);
+  void removeEvent(String id) {
+    policy.removeEvent(id);
+    _tick();
+    _save();
+  }
+
+  void consume(BannerItem item) {
+    policy.consumeGroup(item.groupKey);
+    currentBanner.value = policy.current;
+    _save();
+  }
+
+  void clearTypes(Set<BannerType> types) {
+    for (final group in policy.groups.values.toList()) {
+      if (types.contains(group.type)) policy.consumeGroup(group.groupKey);
+    }
+    currentBanner.value = policy.current;
     _save();
   }
 
@@ -170,9 +311,13 @@ class BannerManager {
     final value = jsonEncode(
       policy.history.map((key, at) => MapEntry(key, at.millisecondsSinceEpoch)),
     );
+    final groups = jsonEncode(
+      policy.groups.values.map((item) => item.toJson()).toList(),
+    );
     _writes = _writes
         .then((_) async {
           await prefs.setString('banner_v2:$uid', value);
+          await prefs.setString('banner_groups:$uid', groups);
         })
         .catchError((Object _) {});
   }

@@ -1,3 +1,4 @@
+import 'tag_duet_history_screen.dart';
 import 'banner_transition.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -35,23 +36,25 @@ class _GlobalBannerOverlayState extends State<GlobalBannerOverlay>
           WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
     );
     manager.canPresent = _canPresent;
+    manager.actorAllowed = _actorAllowed;
+    manager.readyToPresent = _readyToPresent;
+  }
+
+  bool _actorAllowed(String uid) {
+    if (!mounted) return false;
+    final auth = context.read<custom.AuthProvider>();
+    return !auth.blockedUsersSet.contains(uid) &&
+        !auth.blockedBySet.contains(uid);
   }
 
   bool _canPresent(BannerItem item) {
-    if (!mounted ||
-        manager.isOpening ||
-        FirebaseAuth.instance.currentUser == null) {
+    if (!mounted || FirebaseAuth.instance.currentUser == null) {
       return false;
     }
     final auth = context.read<custom.AuthProvider>();
     if (item.actors.keys.any(
       (uid) =>
           auth.blockedUsersSet.contains(uid) || auth.blockedBySet.contains(uid),
-    )) {
-      return false;
-    }
-    if (item.actors.keys.any(
-      (uid) => !AudienceAccess.instance.canViewProfile(uid),
     )) {
       return false;
     }
@@ -62,6 +65,13 @@ class _GlobalBannerOverlayState extends State<GlobalBannerOverlay>
     return true;
   }
 
+  bool _readyToPresent(BannerItem item) =>
+      mounted &&
+      !manager.isOpening &&
+      item.actors.keys.every(
+        (uid) => AudienceAccess.instance.canViewProfile(uid),
+      );
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) =>
       manager.setForeground(state == AppLifecycleState.resumed);
@@ -69,6 +79,8 @@ class _GlobalBannerOverlayState extends State<GlobalBannerOverlay>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     manager.canPresent = null;
+    manager.actorAllowed = null;
+    manager.readyToPresent = null;
     super.dispose();
   }
 
@@ -147,7 +159,14 @@ class _BannerCardState extends State<_BannerCard> {
       }
       Widget destination;
       final postId = item.data['postId']?.toString() ?? '';
-      if ({
+      final targets = item.events.values
+          .map((data) => data['postId'])
+          .whereType<String>()
+          .where((id) => id.isNotEmpty)
+          .toSet();
+      if (item.type == BannerType.mention && targets.length > 1) {
+        destination = const TagDuetHistoryScreen();
+      } else if ({
         BannerType.like,
         BannerType.comment,
         BannerType.mention,
@@ -203,6 +222,7 @@ class _BannerCardState extends State<_BannerCard> {
           }),
         );
       } catch (_) {}
+      manager.consume(item);
       unawaited(nav.push(MaterialPageRoute(builder: (_) => destination)));
     } catch (error) {
       debugPrint('Banner navigation skipped: $error');

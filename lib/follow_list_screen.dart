@@ -1,3 +1,4 @@
+import 'banner_manager.dart';
 import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -46,6 +47,14 @@ class _FollowListScreenState extends State<FollowListScreen> with SingleTickerPr
       vsync: this,
       initialIndex: widget.initialTab.clamp(0, 3),
     );
+    void clearOwnFollowersGroup() {
+      if (mounted && _tabController.index == 1 &&
+          FirebaseAuth.instance.currentUser?.uid == widget.userId) {
+        BannerManager.instance.clearTypes({BannerType.follow});
+      }
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => clearOwnFollowersGroup());
+    _tabController.addListener(clearOwnFollowersGroup);
     _searchController.addListener(() {
       setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
     });

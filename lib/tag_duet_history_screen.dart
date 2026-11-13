@@ -1,3 +1,4 @@
+import 'banner_manager.dart';
 import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -42,6 +43,12 @@ class _TagDuetHistoryScreenState extends State<TagDuetHistoryScreen> {
   @override
   void initState() {
     super.initState();
+    final viewer = FirebaseAuth.instance.currentUser?.uid;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && FirebaseAuth.instance.currentUser?.uid == viewer) {
+        BannerManager.instance.clearTypes({BannerType.mention});
+      }
+    });
     _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
       if (!mounted) return;
       setState(() {
