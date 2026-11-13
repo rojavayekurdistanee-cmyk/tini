@@ -414,53 +414,61 @@ if (!toUid || toUid === fromUid) return null;
         const prefs = prefsDoc.exists ? prefsDoc.data() : null;
         const fcmTokens = receiverData?.fcmTokens || [];
         if (fcmTokens.length === 0) return null;
-        const cleanTokens = fcmTokens.filter(t => t && t.length > 10);
+        const cleanTokens = [...new Set(fcmTokens.filter(t => typeof t === 'string' && t.length > 10))];
         if (cleanTokens.length === 0) return null;
+
+        // The current preference takes precedence, including explicit true.
+        // Older account fields are only a fallback for an unmigrated key.
+        const notificationEnabled = (key) => {
+            if (typeof prefs?.[key] === 'boolean') return prefs[key];
+            const legacy = receiverData?.notificationSettings?.[key];
+            return typeof legacy === 'boolean' ? legacy : true;
+        };
 
                         // [Tini Update] - ربط زر تسجيلات الإعجاب بقسم التفاعلات
         if (type === 'like') {
-            if (prefs?.likes === false || receiverData?.notificationSettings?.likes === false) {
+            if (!notificationEnabled('likes')) {
                 console.log(`Skipped LIKE for ${toUid} - muted from interactions`);
                 return null;
             }
         }
         // [Tini Update] - ربط زر مرات الإضافة إلى المحفوظات
         if (type === 'save' || type === 'bookmark' || type === 'favorite' || type === 'saves') {
-            if (prefs?.saves === false || receiverData?.notificationSettings?.saves === false) {
+            if (!notificationEnabled('saves')) {
                 console.log(`Skipped SAVE for ${toUid} - muted from interactions`);
                 return null;
             }
         }
         // [Tini Update] - ربط زر التعليقات
         if (type === 'comment') {
-            if (prefs?.comments === false || receiverData?.notificationSettings?.comments === false) {
+            if (!notificationEnabled('comments')) {
                 console.log(`Skipped COMMENT for ${toUid} - muted from interactions`);
                 return null;
             }
         }
         // [Tini Update] - ربط زر متابعون جدد
         if (type === 'follow' || type === 'new_follower' || type === 'new_followers') {
-            if (prefs?.new_followers === false || receiverData?.notificationSettings?.new_followers === false) {
+            if (!notificationEnabled('new_followers')) {
                 console.log(`Skipped FOLLOW for ${toUid} - muted from interactions`);
                 return null;
             }
         }
         // [Tini Update] - ربط زر منشورات معاد نشرها
         if (type === 'repost' || type === 'reposts' || type === 'share') {
-            if (prefs?.reposts === false || receiverData?.notificationSettings?.reposts === false) {
+            if (!notificationEnabled('reposts')) {
                 console.log(`Skipped REPOST for ${toUid} - muted from interactions`);
                 return null;
             }
         }
         // [Tini Update] - ربط زر رسائل خاصة (المهم)
         if (type === 'message' || type === 'chat' || type === 'private_message') {
-            if (prefs?.private === false || receiverData?.notificationSettings?.private === false) {
+            if (!notificationEnabled('private')) {
                 console.log(`Skipped MESSAGE for ${toUid} - muted private messages`);
                 return null;
             }
         }
 
-getMessaging().sendEach(cleanTokens.map(token => ({
+        const messages = cleanTokens.map(token => ({
             token: token,
             data: {
                 title: senderName,
@@ -477,9 +485,29 @@ getMessaging().sendEach(cleanTokens.map(token => ({
             android: {
                 priority: "high"
             }
-        })));
-        console.log("Data notification sent with avatar:", senderAvatar, "and postImage:", postImage, "commentId:", commentId);
-        return { success: true };
+        }));
+        let successCount = 0;
+        let failureCount = 0;
+        // Await all deliveries before the Cloud Function finishes. FCM accepts
+        // at most 500 messages in one sendEach call.
+        for (let offset = 0; offset < messages.length; offset += 500) {
+            const result = await getMessaging().sendEach(messages.slice(offset, offset + 500));
+            successCount += result.successCount;
+            failureCount += result.failureCount;
+            for (const response of result.responses) {
+                if (!response.success) {
+                    console.error('Activity notification delivery failed', {
+                        activityId: event.params.activityId,
+                        type,
+                        code: response.error?.code || 'unknown',
+                    });
+                }
+            }
+        }
+        console.log('Activity notification delivery completed', {
+            activityId: event.params.activityId, type, successCount, failureCount,
+        });
+        return { success: failureCount === 0, successCount, failureCount };
     } catch (error) {
         console.error("Activity notification error:", error);
         return null;
