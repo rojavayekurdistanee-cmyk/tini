@@ -340,6 +340,27 @@ exports.sendActivityNotification = onDocumentCreated({
     const commentId = (activity.commentId || "").toString();
     const type = activity.type || "general";
 
+    // تسجيل تشخيصي للحفظ والمشاركة فقط؛ لا يغيّر المحتوى أو شروط الكتم.
+    const isSaveOrShare = [
+        'save', 'bookmark', 'favorite', 'saves', 'repost', 'reposts', 'share'
+    ].includes(type);
+    let diagnosticStage = "start";
+    const trace = (status, details = {}) => {
+        if (!isSaveOrShare) return;
+        console.log("[Tini SaveShare]", JSON.stringify({
+            activityId: event.params.activityId,
+            eventId: event.id || null,
+            type,
+            toUid: toUid || null,
+            fromUid: fromUid || null,
+            postId: postId || null,
+            stage: diagnosticStage,
+            status,
+            ...details
+        }));
+    };
+    trace("STARTED");
+
     // [Tini Update] - لا ترسل إشعار خارجي للستوري و زيارة الملف الشخصي + منع تكرار اشعار قد تعرفه
     if (
         type === 'story_new' ||
@@ -355,13 +376,19 @@ exports.sendActivityNotification = onDocumentCreated({
         return null;
     }
 
-    if (!toUid || toUid === fromUid) return null;
+    if (!toUid || toUid === fromUid) {
+        trace("SKIPPED", {
+            reason: !toUid ? "missing_recipient" : "self_interaction"
+        });
+        return null;
+    }
 
     try {
         let senderAvatar = "";
         let senderName = "مستخدم";
 
         try {
+            diagnosticStage = "sender_lookup";
             const sDoc = await db.collection('users').doc(fromUid).get();
 
             if (sDoc.exists) {
@@ -380,6 +407,10 @@ exports.sendActivityNotification = onDocumentCreated({
                     "";
             }
         } catch (e) {
+            trace("WARNING_CONTINUING", {
+                reason: "sender_lookup_failed",
+                errorCode: e.code || "unknown"
+            });
             console.log("sender fetch error", e);
         }
 
@@ -402,6 +433,7 @@ exports.sendActivityNotification = onDocumentCreated({
 
         if (postId && !isChatMessage) {
             try {
+                diagnosticStage = "post_lookup";
                 let postDoc = await db.collection('posts').doc(postId).get();
 
                 if (!postDoc.exists && postId.endsWith('.mp4')) {
@@ -457,21 +489,30 @@ exports.sendActivityNotification = onDocumentCreated({
                     console.log("POST NOT FOUND FOR:", postId);
                 }
             } catch (e) {
+                trace("WARNING_CONTINUING", {
+                    reason: "post_lookup_failed",
+                    errorCode: e.code || "unknown"
+                });
                 console.log("post fetch error", e);
             }
         }
 
         // ------------------------------------
 
+        diagnosticStage = "receiver_lookup";
         const receiverDoc = await db
             .collection('users')
             .doc(toUid)
             .get();
 
-        if (!receiverDoc.exists) return null;
+        if (!receiverDoc.exists) {
+            trace("SKIPPED", { reason: "recipient_document_missing" });
+            return null;
+        }
 
         const receiverData = receiverDoc.data();
 
+        diagnosticStage = "preferences_lookup";
         const prefsDoc = await db
             .doc(`users/${toUid}/notificationSettings/preferences`)
             .get();
@@ -480,13 +521,36 @@ exports.sendActivityNotification = onDocumentCreated({
 
         const fcmTokens = receiverData?.fcmTokens || [];
 
-        if (fcmTokens.length === 0) return null;
+        diagnosticStage = "token_check";
+        trace("TOKENS_CHECKED", {
+            storedTokenCount: fcmTokens.length,
+            preferencesDocumentExists: prefsDoc.exists
+        });
+        if (fcmTokens.length === 0) {
+            trace("SKIPPED", { reason: "no_fcm_tokens" });
+            return null;
+        }
 
         const cleanTokens = fcmTokens.filter(
             t => t && t.length > 10
         );
 
-        if (cleanTokens.length === 0) return null;
+        if (cleanTokens.length === 0) {
+            trace("SKIPPED", { reason: "no_tokens_passed_existing_filter" });
+            return null;
+        }
+
+        diagnosticStage = "settings_check";
+        if (isSaveOrShare) {
+            const preferenceKey = ['save', 'bookmark', 'favorite', 'saves']
+                .includes(type) ? 'saves' : 'reposts';
+            trace("SETTINGS_CHECKED", {
+                preferenceKey,
+                currentValue: prefs?.[preferenceKey] ?? null,
+                legacyValue: receiverData?.notificationSettings?.[preferenceKey] ?? null,
+                validTokenCount: cleanTokens.length
+            });
+        }
 
         // [Tini Update] - ربط زر تسجيلات الإعجاب بقسم التفاعلات
         if (type === 'like') {
@@ -512,6 +576,12 @@ exports.sendActivityNotification = onDocumentCreated({
                 prefs?.saves === false ||
                 receiverData?.notificationSettings?.saves === false
             ) {
+                trace("SKIPPED", {
+                    reason: "notifications_disabled",
+                    preferenceKey: "saves",
+                    disabledInCurrentSettings: prefs?.saves === false,
+                    disabledInLegacySettings: receiverData?.notificationSettings?.saves === false
+                });
                 console.log(
                     `Skipped SAVE for ${toUid} - muted from interactions`
                 );
@@ -559,6 +629,12 @@ exports.sendActivityNotification = onDocumentCreated({
                 prefs?.reposts === false ||
                 receiverData?.notificationSettings?.reposts === false
             ) {
+                trace("SKIPPED", {
+                    reason: "notifications_disabled",
+                    preferenceKey: "reposts",
+                    disabledInCurrentSettings: prefs?.reposts === false,
+                    disabledInLegacySettings: receiverData?.notificationSettings?.reposts === false
+                });
                 console.log(
                     `Skipped REPOST for ${toUid} - muted from interactions`
                 );
@@ -629,9 +705,9 @@ exports.sendActivityNotification = onDocumentCreated({
             }
         }));
 
-        // Preserve the original delivery semantics for save/share and every
-        // other existing type. Only the three requested types use the new path.
-        if (!externalSocialPush) {
+        // الأنواع الأخرى تبقى على مسارها السابق.
+        // ننتظر الحفظ والمشاركة أيضاً لكي نسجل نتيجة FCM الحقيقية.
+        if (!externalSocialPush && !isSaveOrShare) {
             getMessaging().sendEach(messages);
 
             console.log(
@@ -646,7 +722,33 @@ exports.sendActivityNotification = onDocumentCreated({
             return { success: true };
         }
 
+        diagnosticStage = "fcm_send";
+        trace("FCM_SEND_STARTED", {
+            messageCount: messages.length,
+            dataOnly: !externalSocialPush,
+            hasTitle: Boolean(senderName),
+            hasBody: Boolean(finalText),
+            hasAvatar: Boolean(senderAvatar),
+            hasPostImage: Boolean(postImage)
+        });
+
         const batchResult = await getMessaging().sendEach(messages);
+
+        diagnosticStage = "fcm_result";
+        // قبول FCM للرسالة لا يثبت وصولها أو ظهورها على الهاتف.
+        trace("FCM_SEND_COMPLETED", {
+            successCount: batchResult.successCount,
+            failureCount: batchResult.failureCount
+        });
+        if (isSaveOrShare) {
+            batchResult.responses.forEach((result, tokenIndex) => {
+                trace(result.success ? "FCM_ACCEPTED" : "FCM_REJECTED", {
+                    tokenIndex,
+                    messageId: result.messageId || null,
+                    errorCode: result.error?.code || null
+                });
+            });
+        }
 
         if (batchResult.failureCount > 0) {
             console.warn("Activity push partial/total failure:", {
@@ -673,6 +775,13 @@ exports.sendActivityNotification = onDocumentCreated({
         };
 
     } catch (error) {
+        trace("FAILED", {
+            reason: diagnosticStage === "fcm_send"
+                ? "fcm_request_failed"
+                : "function_error",
+            errorCode: error.code || "unknown",
+            errorName: error.name || "Error"
+        });
         console.error("Activity notification error:", error);
         return null;
     }

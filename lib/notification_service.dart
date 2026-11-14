@@ -26,12 +26,42 @@ import 'banner_video_navigation.dart';
 import 'group_chat_screen.dart';
 import 'audience_access.dart';
 
+// Diagnostic logs contain identifiers/status only, never tokens or message text.
+void _traceSaveShare(Map<String, dynamic> data, String stage, String status,
+    [Map<String, Object?> details = const {}]) {
+  if (!const {'save', 'bookmark', 'favorite', 'saves', 'repost', 'reposts', 'share'}
+      .contains(data['type'])) {
+    return;
+  }
+  debugPrint('[Tini SaveShare] ${jsonEncode({
+    'activityId': data['activityId'],
+    'type': data['type'],
+    'postId': data['postId'],
+    'fromUid': data['fromUid'],
+    'stage': stage,
+    'status': status,
+    ...details,
+  })}');
+}
+
+String _pushDiagnosticErrorCode(Object error) {
+  if (error is FirebaseException) return error.code;
+  if (error is PlatformException) return error.code;
+  return error.runtimeType.toString();
+}
+
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse details) {
 }
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  var stage = 'background_initialization';
+  _traceSaveShare(message.data, stage, 'MESSAGE_RECEIVED', {
+    'messageId': message.messageId,
+    'hasNotificationPayload': message.notification != null,
+  });
+  try {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
   if (message.data['type'] == 'message' || message.data['type'] == 'chat') {
@@ -49,14 +79,23 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
 
   final service = NotificationService();
+  stage = 'background_local_initialization';
   await service.initForBackground();
+  _traceSaveShare(message.data, stage, 'INITIALIZED');
 
   final data = message.data;
   final avatarUrl = data['avatar']?? "";
   final title = data['title']?? "Tini";
   final body = data['body']?? "";
 
+  stage = 'background_render';
   await service.showBackgroundNotification(title, body, avatarUrl, data);
+  } catch (error) {
+    _traceSaveShare(message.data, stage, 'FAILED', {
+      'errorCode': _pushDiagnosticErrorCode(error),
+    });
+    rethrow;
+  }
 }
 
 class NotificationService {
@@ -65,20 +104,73 @@ class NotificationService {
 
   // Verify the current post and owner before downloading rich notification media.
   // A background isolate has its own access state and must verify on the server.
-  Future<bool> _mayShowPostNotification(Map<String, dynamic> data) async {
+  Future<bool> _mayShowPostNotification(Map<String, dynamic> data, {
+    String diagnosticStage = 'audience_check',
+  }) async {
     final type = (data['type'] ?? '').toString();
     if (type == 'message' || type == 'chat' || type == 'group' || type == 'private_message') return true;
     final postId = (data['postId'] ?? '').toString();
     if (postId.isEmpty) {
       // Do not expose an unidentifiable post thumbnail from an older payload.
-      return !['postImage', 'bigPicture', 'imageUrl', 'mediaUrl', 'thumbnailUrl']
+      final allowed = !['postImage', 'bigPicture', 'imageUrl', 'mediaUrl', 'thumbnailUrl']
           .any((key) => (data[key] ?? '').toString().isNotEmpty);
+      _traceSaveShare(data, diagnosticStage,
+          allowed ? 'AUDIENCE_ALLOWED' : 'DISPLAY_SKIPPED', {
+        'reason': allowed ? 'no_post_media' : 'post_id_missing_with_media',
+      });
+      return allowed;
     }
+    _traceSaveShare(data, diagnosticStage, 'AUDIENCE_CHECK_STARTED');
+    final timer = Stopwatch()..start();
     try {
-      return await AudienceAccess.instance.verifyPost(postId);
-    } catch (_) {
+      final allowed = await AudienceAccess.instance.verifyPost(postId);
+      _traceSaveShare(data, diagnosticStage,
+          allowed ? 'AUDIENCE_ALLOWED' : 'DISPLAY_SKIPPED', {
+        'reason': allowed ? 'verified' : 'audience_verification_not_granted',
+        'elapsedMs': timer.elapsedMilliseconds,
+      });
+      return allowed;
+    } catch (error) {
+      _traceSaveShare(data, diagnosticStage, 'DISPLAY_SKIPPED', {
+        'reason': 'audience_check_exception',
+        'errorCode': _pushDiagnosticErrorCode(error),
+        'elapsedMs': timer.elapsedMilliseconds,
+      });
       return false;
     }
+  }
+
+  // A cold-start background isolate can receive a save/share push before the
+  // initial server-confirmed audience reads settle. Never bypass the audience
+  // gate: retry a temporary denial, and display only after a verified grant.
+  Future<bool> _mayShowBackgroundSaveSharePost(
+    Map<String, dynamic> data, {
+    required String diagnosticStage,
+  }) async {
+    final type = (data['type'] ?? '').toString();
+    if (!const {
+      'save', 'bookmark', 'favorite', 'saves', 'repost', 'reposts', 'share'
+    }.contains(type)) {
+      return _mayShowPostNotification(data, diagnosticStage: diagnosticStage);
+    }
+
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        _traceSaveShare(data, diagnosticStage, 'AUDIENCE_RETRY_STARTED', {
+          'attempt': attempt + 1,
+        });
+        await Future<void>.delayed(
+          Duration(milliseconds: attempt == 1 ? 350 : 700),
+        );
+      }
+      if (await _mayShowPostNotification(
+        data,
+        diagnosticStage: diagnosticStage,
+      )) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> init() async {
@@ -121,6 +213,11 @@ class NotificationService {
     });
 
     FirebaseMessaging.onMessage.listen((message) async {
+      _traceSaveShare(message.data, 'foreground_receive', 'MESSAGE_RECEIVED', {
+        'messageId': message.messageId,
+        'hasNotificationPayload': message.notification != null,
+      });
+      try {
       // Keep existing in-app banner handling. The three requested social
       // events must ALSO produce an external notification while Tini is open.
       final type = (message.data['type'] ?? '').toString();
@@ -130,8 +227,19 @@ class NotificationService {
       final handledByBanner =
           WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
               await BannerManager.instance.handleForegroundActivity(message.data);
-      if (handledByBanner && !requiresExternalPush) return;
+      if (handledByBanner && !requiresExternalPush) {
+        _traceSaveShare(message.data, 'foreground_banner', 'DISPLAY_SKIPPED', {
+          'reason': 'handled_by_in_app_banner',
+        });
+        return;
+      }
       await _showNotification(message, androidChannel);
+      } catch (error) {
+        _traceSaveShare(message.data, 'foreground_handler', 'FAILED', {
+          'errorCode': _pushDiagnosticErrorCode(error),
+        });
+        rethrow;
+      }
     });
 
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
@@ -437,11 +545,54 @@ class NotificationService {
     );
   }
 
-    Future<void> showBackgroundNotification(String title, String body, String avatarUrl, Map<String, dynamic> data) async {
-    final notificationViewerUid = FirebaseAuth.instance.currentUser?.uid;
-    if (!await _mayShowPostNotification(data)) return;
+  Future<void> showBackgroundNotification(String title, String body,
+      String avatarUrl, Map<String, dynamic> data) async {
+    _traceSaveShare(data, 'background_render', 'RENDER_STARTED');
+    try {
+      await _renderBackgroundNotification(title, body, avatarUrl, data);
+    } catch (error) {
+      _traceSaveShare(data, 'background_render', 'FAILED', {
+        'errorCode': _pushDiagnosticErrorCode(error),
+      });
+      rethrow;
+    }
+  }
+
+    Future<void> _renderBackgroundNotification(String title, String body, String avatarUrl, Map<String, dynamic> data) async {
+    final backgroundType = (data['type'] ?? '').toString();
+    final isSaveShare = const {
+      'save', 'bookmark', 'favorite', 'saves', 'repost', 'reposts', 'share'
+    }.contains(backgroundType);
+    String? readyViewerUid;
+    if (isSaveShare) {
+      // The first auth-state event is emitted after Firebase Auth has loaded
+      // the persisted session in this background isolate.
+      try {
+        final viewer = await FirebaseAuth.instance.authStateChanges().first
+            .timeout(const Duration(seconds: 3));
+        if (viewer == null) {
+          _traceSaveShare(data, 'background_auth', 'DISPLAY_SKIPPED', {
+            'reason': 'viewer_not_authenticated',
+          });
+          return;
+        }
+        readyViewerUid = viewer.uid;
+        _traceSaveShare(data, 'background_auth', 'VIEWER_READY');
+      } catch (error) {
+        _traceSaveShare(data, 'background_auth', 'AUTH_READINESS_CHECK_FAILED', {
+          'errorCode': _pushDiagnosticErrorCode(error),
+        });
+        // Keep the existing verified-audience path if the session is already
+        // available; never display a stale push for a signed-out viewer.
+        if (FirebaseAuth.instance.currentUser == null) return;
+      }
+    }
+    final notificationViewerUid =
+        readyViewerUid ?? FirebaseAuth.instance.currentUser?.uid;
+    if (!await _mayShowBackgroundSaveSharePost(data, diagnosticStage: 'background_audience_before_media')) return;
 
         // [Titi Update] - معاينة الرسائل الخاصة (خلفية) + زر following
+    _traceSaveShare(data, 'background_preferences', 'PREFERENCES_READ_STARTED');
     final prefs = await SharedPreferences.getInstance();
     final bool previewEnabled = prefs.getBool('messages_preview') ?? true;
     final String type = (data['type'] ?? "").toString();
@@ -452,10 +603,16 @@ class NotificationService {
     try {
       final mutedRooms = prefs.getStringList('muted_rooms')?? [];
       if (data['roomId']!= null && mutedRooms.contains(data['roomId'].toString())) {
+        _traceSaveShare(data, 'local_mute_check', 'DISPLAY_SKIPPED', {
+          'reason': 'room_muted',
+        });
         return;
       }
       final mutedGroups = prefs.getStringList('muted_group_rooms')?? [];
       if (data['groupId']!= null && mutedGroups.contains(data['groupId'].toString())) {
+        _traceSaveShare(data, 'local_mute_check', 'DISPLAY_SKIPPED', {
+          'reason': 'group_muted',
+        });
         return;
       }
     } catch (e) {}
@@ -478,6 +635,10 @@ class NotificationService {
         isInDnd = nowMin >= startMin || nowMin < endMin;
       }
       if (isInDnd) {
+        _traceSaveShare(data, 'background_settings', 'DISPLAY_SKIPPED', {
+          'reason': 'do_not_disturb_schedule',
+          'nowMinute': nowMin, 'startMinute': startMin, 'endMinute': endMin,
+        });
         return;
       }
     }
@@ -514,6 +675,7 @@ class NotificationService {
       importance: Importance.high,
     );
 
+    _traceSaveShare(data, 'background_media', 'MEDIA_PREPARATION_STARTED');
     FilePathAndroidBitmap? largeIcon;
     BigPictureStyleInformation? bigPictureStyle;
 
@@ -558,9 +720,23 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
 
     // (تم حذف حفظ pending_notification من هنا: كان يفتح الإشعار بدون ما المستخدم يضغط عليه)
 
-    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
-    if (!await _mayShowPostNotification(data)) return;
-    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
+    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) {
+      _traceSaveShare(data, 'background_identity', 'DISPLAY_SKIPPED', {
+        'reason': 'account_changed_during_render',
+      });
+      return;
+    }
+    if (!await _mayShowBackgroundSaveSharePost(data, diagnosticStage: 'background_audience_before_show')) return;
+    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) {
+      _traceSaveShare(data, 'background_identity', 'DISPLAY_SKIPPED', {
+        'reason': 'account_changed_during_render',
+      });
+      return;
+    }
+    _traceSaveShare(data, 'background_platform_show', 'PLATFORM_SHOW_STARTED', {
+      'hasLargeIcon': largeIcon != null,
+      'hasBigPicture': bigPictureStyle != null,
+    });
     await _localNotifications.show(
       id: data['type'] == 'custom_suggestion' ? 8888 : DateTime.now().millisecond,
       title: title,
@@ -584,15 +760,32 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
         ),
       ),
     );
+    _traceSaveShare(data, 'background_platform_show', 'PLATFORM_SHOW_COMPLETED', {
+      'visualDisplayConfirmed': false,
+    });
   }
 
-    Future<void> _showNotification(RemoteMessage message, AndroidNotificationChannel channel) async {
+  Future<void> _showNotification(RemoteMessage message,
+      AndroidNotificationChannel channel) async {
+    _traceSaveShare(message.data, 'foreground_render', 'RENDER_STARTED');
+    try {
+      await _renderForegroundNotification(message, channel);
+    } catch (error) {
+      _traceSaveShare(message.data, 'foreground_render', 'FAILED', {
+        'errorCode': _pushDiagnosticErrorCode(error),
+      });
+      rethrow;
+    }
+  }
+
+    Future<void> _renderForegroundNotification(RemoteMessage message, AndroidNotificationChannel channel) async {
     final notification = message.notification;
     final data = message.data;
     final notificationViewerUid = FirebaseAuth.instance.currentUser?.uid;
-    if (!await _mayShowPostNotification(data)) return;
+    if (!await _mayShowPostNotification(data, diagnosticStage: 'foreground_audience_before_media')) return;
 
         // [Titi Update] - معاينة الرسائل الخاصة + زر following
+    _traceSaveShare(data, 'foreground_preferences', 'PREFERENCES_READ_STARTED');
     final prefs = await SharedPreferences.getInstance();
     final bool previewEnabled = prefs.getBool('messages_preview') ?? true;
     final String type = (data['type'] ?? "").toString();
@@ -603,10 +796,16 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
     try {
       final mutedRooms = prefs.getStringList('muted_rooms')?? [];
       if (data['roomId']!= null && mutedRooms.contains(data['roomId'].toString())) {
+        _traceSaveShare(data, 'local_mute_check', 'DISPLAY_SKIPPED', {
+          'reason': 'room_muted',
+        });
         return;
       }
       final mutedGroups = prefs.getStringList('muted_group_rooms')?? [];
       if (data['groupId']!= null && mutedGroups.contains(data['groupId'].toString())) {
+        _traceSaveShare(data, 'local_mute_check', 'DISPLAY_SKIPPED', {
+          'reason': 'group_muted',
+        });
         return;
       }
     } catch (e) {}
@@ -629,6 +828,10 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
         isInDnd = nowMin >= startMin || nowMin < endMin;
       }
       if (isInDnd) {
+        _traceSaveShare(data, 'foreground_settings', 'DISPLAY_SKIPPED', {
+          'reason': 'do_not_disturb_schedule',
+          'nowMinute': nowMin, 'startMinute': startMin, 'endMinute': endMin,
+        });
         return;
       }
     }
@@ -669,6 +872,7 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
 }
 
     BigPictureStyleInformation? bigPictureStyle;
+    _traceSaveShare(data, 'foreground_media', 'MEDIA_PREPARATION_STARTED');
     FilePathAndroidBitmap? largeIcon;
 
     try {
@@ -705,13 +909,31 @@ final payloadData = jsonEncode({'postId': data['postId'], 'commentId': data['com
         );
       }
     } catch (e) {
+      _traceSaveShare(data, 'foreground_media', 'WARNING_CONTINUING', {
+        'reason': 'media_preparation_failed',
+        'errorCode': _pushDiagnosticErrorCode(e),
+      });
     }
 
 final payloadData = jsonEncode({'postId': message.data['postId'], 'commentId': message.data['commentId'], 'type': message.data['type'], 'fromUid': message.data['fromUid'], 'roomId': message.data['roomId'], 'groupId': message.data['groupId']});
 
-    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
-    if (!await _mayShowPostNotification(data)) return;
-    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) return;
+    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) {
+      _traceSaveShare(data, 'foreground_identity', 'DISPLAY_SKIPPED', {
+        'reason': 'account_changed_during_render',
+      });
+      return;
+    }
+    if (!await _mayShowPostNotification(data, diagnosticStage: 'foreground_audience_before_show')) return;
+    if (FirebaseAuth.instance.currentUser?.uid != notificationViewerUid) {
+      _traceSaveShare(data, 'foreground_identity', 'DISPLAY_SKIPPED', {
+        'reason': 'account_changed_during_render',
+      });
+      return;
+    }
+    _traceSaveShare(data, 'foreground_platform_show', 'PLATFORM_SHOW_STARTED', {
+      'hasLargeIcon': largeIcon != null,
+      'hasBigPicture': bigPictureStyle != null,
+    });
     await _localNotifications.show(
       id: data['type'] == 'custom_suggestion' ? 8888 : message.hashCode,
       title: titleToShow,
@@ -735,6 +957,9 @@ final payloadData = jsonEncode({'postId': message.data['postId'], 'commentId': m
         ),
       ),
     );
+    _traceSaveShare(data, 'foreground_platform_show', 'PLATFORM_SHOW_COMPLETED', {
+      'visualDisplayConfirmed': false,
+    });
   }
 
     Future<String?> _downloadImage(String url, String name) async {
