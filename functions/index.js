@@ -669,6 +669,16 @@ exports.sendActivityNotification = onDocumentCreated({
             type === 'new_follower' ||
             type === 'new_followers';
 
+        // Let Android display the post thumbnail in expanded notifications
+        // without changing the existing, reliable notification+data delivery.
+        // Follow notifications have no video thumbnail.
+        const socialPostImageUrl =
+            (type === 'like' || type === 'comment') &&
+            typeof postImage === 'string' &&
+            /^https:\/\/\S+\.(?:jpe?g|png|webp|bmp)(?:[?#]\S*)?$/i.test(postImage.trim())
+                ? postImage.trim()
+                : '';
+
         const messages = cleanTokens.map(token => ({
             token: token,
 
@@ -699,7 +709,8 @@ exports.sendActivityNotification = onDocumentCreated({
                     notification: {
                         channelId: "titi_star_channel",
                         icon: "ic_notification",
-                        sound: "default"
+                        sound: "default",
+                        ...(socialPostImageUrl ? { imageUrl: socialPostImageUrl } : {})
                     }
                 } : {})
             }
