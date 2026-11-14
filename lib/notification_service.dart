@@ -69,8 +69,8 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       await FirebaseFirestore.instance.collection('chat_rooms').doc(message.data['roomId']).collection('messages').doc(message.data['messageId']).update({'isDelivered': true});
     } catch(e){}
   }
-  // FCM displays notification+data messages in the system tray while
-  // backgrounded. Do not generate a duplicate local push for these three types.
+  // Legacy notification+data pushes (and Apple's system alerts) are displayed
+  // by FCM. New Android data-only social pushes use the rich renderer below.
   final backgroundType = (message.data['type'] ?? '').toString();
   if (message.notification != null &&
       const {'like', 'comment', 'follow', 'new_follower', 'new_followers'}
@@ -564,7 +564,10 @@ class NotificationService {
       'save', 'bookmark', 'favorite', 'saves', 'repost', 'reposts', 'share'
     }.contains(backgroundType);
     String? readyViewerUid;
-    if (isSaveShare) {
+    final isSocialPush = const {
+      'like', 'comment', 'follow', 'new_follower', 'new_followers'
+    }.contains(backgroundType);
+    if (isSaveShare || isSocialPush) {
       // The first auth-state event is emitted after Firebase Auth has loaded
       // the persisted session in this background isolate.
       try {
@@ -701,7 +704,8 @@ class NotificationService {
       if (bigPicPath!= null) {
         bigPictureStyle = BigPictureStyleInformation(
           FilePathAndroidBitmap(bigPicPath),
-          
+          contentTitle: title,
+          summaryText: body,
           largeIcon: largeIcon,
           hideExpandedLargeIcon: true,
         );

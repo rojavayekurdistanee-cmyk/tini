@@ -659,9 +659,10 @@ exports.sendActivityNotification = onDocumentCreated({
             }
         }
 
-        // Likes, comments, and new followers need an OS-visible push when Tini
-        // is backgrounded or terminated. Save/share and other existing types
-        // keep their original data-only delivery path.
+        // Android must receive data-only pushes so the background Flutter
+        // renderer can show the circular avatar and expanded post thumbnail.
+        // An Android notification payload bypasses that renderer when closed.
+        // Keep Apple's existing system alert via the platform-specific payload.
         const externalSocialPush =
             type === 'like' ||
             type === 'comment' ||
@@ -673,9 +674,12 @@ exports.sendActivityNotification = onDocumentCreated({
             token: token,
 
             ...(externalSocialPush ? {
-                notification: {
-                    title: senderName,
-                    body: finalText
+                apns: {
+                    payload: {
+                        aps: {
+                            alert: { title: senderName, body: finalText }
+                        }
+                    }
                 }
             } : {}),
 
@@ -693,15 +697,7 @@ exports.sendActivityNotification = onDocumentCreated({
             },
 
             android: {
-                priority: "high",
-
-                ...(externalSocialPush ? {
-                    notification: {
-                        channelId: "titi_star_channel",
-                        icon: "ic_notification",
-                        sound: "default"
-                    }
-                } : {})
+                priority: "high"
             }
         }));
 
