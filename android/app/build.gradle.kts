@@ -64,6 +64,8 @@ flutter {
 dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.1.0"))
     implementation("com.google.firebase:firebase-analytics")
+    // Required directly by TiniNotificationService and kapt's generated stubs.
+    implementation("com.google.firebase:firebase-messaging")
     implementation("androidx.multidex:multidex:2.0.1")
     // Bundled, on-device person segmentation (no external image server).
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
