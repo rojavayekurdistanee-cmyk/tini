@@ -292,6 +292,7 @@ void initState() {
       } catch (_) {}
     }
 
+    // Cold notification playback is started once by the navigation handoff.
     // هوم - شغل فوري بدون انتظار فريم
     if (!widget.isFromProfileGrid && widget.isFeedActive) {
       try {
@@ -300,7 +301,8 @@ void initState() {
           final url = _getBestUrl(_stablePosts[_currentIndex]);
           if (!_canViewPost(_stablePosts[_currentIndex])) {
             TitiSingleEngine().pause();
-          } else if (url.isNotEmpty) {
+          } else if (url.isNotEmpty &&
+              !(widget.isBannerNavigation && widget.isFromTerminated)) {
             String? prevUrl, prevPrevUrl, nextUrl, nextNextUrl, nextNextNextUrl;
             if (_currentIndex > 0) prevUrl = _getBestUrl(_stablePosts[_currentIndex - 1]);
             if (_currentIndex > 1) prevPrevUrl = _getBestUrl(_stablePosts[_currentIndex - 2]);
@@ -827,6 +829,7 @@ void dispose() {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(_isCommentsOpen ? 10 : 0),
                         child: TitiVideoPlayer(
+                      playbackManagedExternally: widget.isBannerNavigation && widget.isFromTerminated,
                       isFeedActive: widget.isFeedActive,
                       key: ValueKey("video_${postDoc.id}_${_currentIndex}"),
                       postDoc: postDoc,

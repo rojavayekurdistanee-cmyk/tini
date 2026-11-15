@@ -49,6 +49,8 @@ class _SplashScreenState extends State<SplashScreen> {
           TitiSingleEngine().ensureInitialized();
           final postProvider = Provider.of<PostProvider>(context, listen: false);
           await postProvider.fetchInitialPostsForSplash();
+          // A notification may have replaced Splash during the fetch.
+          if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
           if (postProvider.initialPosts.isNotEmpty) {
             final firstData = postProvider.initialPosts.first.data() as Map<String, dynamic>;
             final firstUrl = firstData['videoUrl'] ?? "";
