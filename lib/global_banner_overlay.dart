@@ -207,10 +207,12 @@ class _BannerCardState extends State<_BannerCard> {
           initialTab: 1,
         );
       } else {
-        if (!AudienceAccess.instance.canViewProfile(_actor)) return;
+        if (item.type != BannerType.follow &&
+            !AudienceAccess.instance.canViewProfile(_actor)) return;
         destination = item.type == BannerType.story
             ? Story(userId: _actor)
-            : ProfileScreen(userId: _actor);
+            : ProfileScreen(userId: _actor,
+                resolveNotificationIdentity: item.type == BannerType.follow);
       }
       if (FirebaseAuth.instance.currentUser?.uid != viewer ||
           !nav.mounted ||
@@ -219,8 +221,8 @@ class _BannerCardState extends State<_BannerCard> {
         return;
       }
       manager.consume(item);
-      if (bannerVideoUrl != null) {
-        await BannerVideoNavigation.open(navigator: nav, url: bannerVideoUrl,
+      if (bannerVideoUrl != null || item.type == BannerType.follow) {
+        await BannerVideoNavigation.open(navigator: nav, url: bannerVideoUrl ?? '',
           child: destination, onPushed: releaseOpening);
       } else {
         try { await TitiSingleEngine().player.pause(); } catch (_) {}

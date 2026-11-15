@@ -294,24 +294,12 @@ class NotificationService {
   });
   return;
 }
-    // --- تعديل جديد: اذا follow افتح البروفايل ---
     if (type == "follow" && fromUid.isNotEmpty) {
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    Future.delayed(const Duration(milliseconds: 1400), () {
-      if (isFromTerminated) {
-        navigatorKey.currentState?.pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUid)),
-          (route) => false,
-        );
-      } else {
-        navigatorKey.currentState?.push(
-          MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUid)),
-        );
-      }
-    });
-  });
-    return;
-}
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _openFollowNotification(fromUid, isFromTerminated: isFromTerminated);
+      });
+      return;
+    }
 
                                 // --- اذا رسالة شات خاص ---
     if ((type == "message" || type == "chat") && fromUid.isNotEmpty) {
@@ -411,20 +399,11 @@ class NotificationService {
   }
   return;
 }
-      // --- تعديل جديد: اذا follow افتح البروفايل ---
       if (type == "follow" && fromUid.isNotEmpty) {
-  if (isFromTerminated) {
-    navigatorKey.currentState?.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUid)),
-      (route) => false,
-    );
-  } else {
-    navigatorKey.currentState?.push(
-      MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUid)),
-    );
-  }
-    return;
-}
+        await _openFollowNotification(fromUid,
+            isFromTerminated: isFromTerminated);
+        return;
+      }
 
                                                 // --- اذا رسالة شات خاص ---
       if ((type == "message" || type == "chat") && fromUid.isNotEmpty) {
@@ -549,20 +528,9 @@ class NotificationService {
       navigator: navigator,
       url: url,
       replaceStack: false,
-      prepareColdStart: isFromTerminated ? () async {
-        // Wait for Home to be installed and Splash to be disposed while the
-        // notification lease already prevents startup from selecting a video.
-        final home = MaterialPageRoute<void>(
-          settings: const RouteSettings(name: '/home'),
-          builder: (_) => const HomeScreen(),
-        );
-        navigator.pushAndRemoveUntil<void>(home, (route) => false);
-        await WidgetsBinding.instance.endOfFrame;
-        while (navigator.mounted && home.isActive &&
-            home.animation?.status != AnimationStatus.completed) {
-          await WidgetsBinding.instance.endOfFrame;
-        }
-      } : null,
+      prepareColdStart: isFromTerminated
+          ? () => _prepareNotificationHome(navigator)
+          : null,
       onPushed: () {},
       child: PostViewScreen(
         posts: [doc],
@@ -572,6 +540,34 @@ class NotificationService {
         isFromTerminated: isFromTerminated,
         isBannerNavigation: true,
       ),
+    );
+  }
+
+  Future<void> _prepareNotificationHome(NavigatorState navigator) async {
+    final home = MaterialPageRoute<void>(
+      settings: const RouteSettings(name: '/home'),
+      builder: (_) => const HomeScreen(),
+    );
+    navigator.pushAndRemoveUntil<void>(home, (route) => false);
+    await WidgetsBinding.instance.endOfFrame;
+    while (navigator.mounted && home.isActive &&
+        home.animation?.status != AnimationStatus.completed) {
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
+  Future<void> _openFollowNotification(String uid,
+      {required bool isFromTerminated}) async {
+    final navigator = navigatorKey.currentState;
+    if (navigator == null || !navigator.mounted) return;
+    await BannerVideoNavigation.open(
+      navigator: navigator,
+      url: '', // Profile destination: keep the source video silent.
+      prepareColdStart: isFromTerminated
+          ? () => _prepareNotificationHome(navigator)
+          : null,
+      onPushed: () {},
+      child: ProfileScreen(userId: uid, resolveNotificationIdentity: true),
     );
   }
 
