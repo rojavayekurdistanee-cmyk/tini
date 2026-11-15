@@ -1,4 +1,5 @@
 import 'audience_access.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'user_documents.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -9,6 +10,22 @@ import 'r2_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'follow_request_service.dart';
 import 'banner_manager.dart'; // [Tini] مدير البانرات المركزي
+
+// Missing public projections must be repaired before an event is discarded.
+Future<Map<String, dynamic>?> readBannerActorProfile({
+  required Future<Map<String, dynamic>?> Function() read,
+  required Future<void> Function() repair,
+  required bool Function() stillValid,
+}) async {
+  if (!stillValid()) return null;
+  final data = await read();
+  if (!stillValid()) return null;
+  if (data != null) return data;
+  await repair();
+  if (!stillValid()) return null;
+  final refreshed = await read();
+  return stillValid() ? refreshed : null;
+}
 
 class ChatMessage {
   final String id;
@@ -290,6 +307,36 @@ class ChatProvider extends ChangeNotifier {
     });
   }
 
+  final Map<String, Future<Map<String, dynamic>?>> _bannerProfileReads = {};
+
+  Future<Map<String, dynamic>?> _readBannerActor(
+      String actor, String uid, int generation) async {
+    bool valid() => _sessionIs(uid, generation) && !isBlocked(actor);
+    if (!valid()) return null;
+    final key = '$generation:$actor';
+    final existing = _bannerProfileReads[key];
+    if (existing != null) return existing;
+    final request = readBannerActorProfile(
+      read: () async => (await UserDocuments.readable(_firestore, actor)
+          .get(const GetOptions(source: Source.server))).data(),
+      repair: () async {
+        await FirebaseFunctions.instanceFor(region: 'europe-west1')
+            .httpsCallable('ensureNotificationProfile')
+            .call<void>({'uid': actor})
+            .timeout(const Duration(seconds: 8));
+      },
+      stillValid: valid,
+    );
+    _bannerProfileReads[key] = request;
+    try {
+      return await request;
+    } finally {
+      if (identical(_bannerProfileReads[key], request)) {
+        _bannerProfileReads.remove(key);
+      }
+    }
+  }
+
   Future<void> _submitBanner(String uid, int generation, String eventId,
       BannerType type, Map<String, dynamic> data) async {
     if (!_sessionIs(uid, generation)) return;
@@ -298,6 +345,19 @@ class ChatProvider extends ChangeNotifier {
     if (type != BannerType.activity && at is Timestamp && _unreadBannerVersions[eventId] != at.microsecondsSinceEpoch) return;
     if (at is! Timestamp || actor.isEmpty || actor == uid || isBlocked(actor) ||
         DateTime.now().difference(at.toDate()) > BannerPolicy.expiry || !_bannerManager.enabled(type)) { return; }
+    // Start the live actor gate while fetching its public presentation data.
+    AudienceAccess.instance.canViewProfile(actor);
+    var user = _bannerUsers[actor];
+    if (user == null || DateTime.now().difference(_bannerUserFetchedAt[actor]!) > const Duration(minutes: 5)) {
+      user = await _readBannerActor(actor, uid, generation);
+      if (!_sessionIs(uid, generation) || user == null) return;
+      if (_bannerUsers.length >= 100) {
+        final oldest = _bannerUsers.keys.first;
+        _bannerUsers.remove(oldest); _bannerUserFetchedAt.remove(oldest);
+      }
+      _bannerUsers[actor] = user;
+      _bannerUserFetchedAt[actor] = DateTime.now();
+    }
     // Reuse a short verification window for bursts on the same post.
     final postId = data['postId']?.toString() ?? '';
     if ({BannerType.like, BannerType.comment, BannerType.mention}.contains(type)) {
@@ -310,20 +370,6 @@ class ChatProvider extends ChangeNotifier {
         if (_verifiedBannerPosts.length >= 100) _verifiedBannerPosts.remove(_verifiedBannerPosts.keys.first);
         _verifiedBannerPosts[postId] = DateTime.now();
       }
-    }
-    // Start the live actor gate while fetching its public presentation data.
-    AudienceAccess.instance.canViewProfile(actor);
-    var user = _bannerUsers[actor];
-    if (user == null || DateTime.now().difference(_bannerUserFetchedAt[actor]!) > const Duration(minutes: 5)) {
-      final doc = await UserDocuments.readable(_firestore, actor).get();
-      if (!_sessionIs(uid, generation) || !doc.exists) return;
-      user = doc.data()!;
-      if (_bannerUsers.length >= 100) {
-        final oldest = _bannerUsers.keys.first;
-        _bannerUsers.remove(oldest); _bannerUserFetchedAt.remove(oldest);
-      }
-      _bannerUsers[actor] = user;
-      _bannerUserFetchedAt[actor] = DateTime.now();
     }
     if (!_sessionIs(uid, generation) || isBlocked(actor)) return;
     if (type != BannerType.activity && _unreadBannerVersions[eventId] != at.microsecondsSinceEpoch) return;
@@ -357,6 +403,10 @@ class ChatProvider extends ChangeNotifier {
               .where(FieldPath.documentId, whereIn: ids).get();
             if (!_sessionIs(uid, generation)) return;
             for (final doc in snapshot.docs) { profiles[doc.id] = doc.data(); }
+            await Future.wait(ids.where((id) => !profiles.containsKey(id)).map((actor) async {
+              final profile = await _readBannerActor(actor, uid, generation);
+              if (profile != null && _sessionIs(uid, generation)) profiles[actor] = profile;
+            }));
           } catch (error) { debugPrint('Unread banner profiles unavailable: $error'); }
         }());
       }
@@ -1519,7 +1569,13 @@ class ChatProvider extends ChangeNotifier {
         .where(FieldPath.documentId, whereIn: batch)
         .snapshots(includeMetadataChanges: true).listen((snapshot) {
           if (!valid() || snapshot.metadata.isFromCache) return;
-          if (snapshot.docs.isEmpty) debugPrint('[Banner] No public presence documents; check syncPublicProfile deployment.');
+          // A missing friend projection cannot emit presence events. Repair it
+          // once per in-flight request; the existing stream receives the result.
+          final found = snapshot.docs.map((doc) => doc.id).toSet();
+          for (final actor in batch.where((actor) => !found.contains(actor))) {
+            unawaited(_readBannerActor(actor, uid, generation).then<void>((_) {},
+                onError: (Object error) => debugPrint('Banner profile repair failed: $error')));
+          }
           for (final change in snapshot.docChanges) {
             if (change.type == DocumentChangeType.removed && !change.doc.metadata.hasPendingWrites) {
               _onlineStates[change.doc.id] = false;
