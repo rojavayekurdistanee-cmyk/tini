@@ -498,11 +498,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
         if (owner != viewerUid && !auth.isFriendSync(owner)) return false;
       }
     }
-    if (data['isMysteryBox'] == true) {
-      final owner = data['uid'];
-      final boxOwner = data['boxOwnedByUid'];
-      if (viewerUid != owner && viewerUid != boxOwner) return false;
-    }
+
     return true;
   }
 
@@ -1877,15 +1873,6 @@ Widget build(BuildContext context) {
       // [Trash V31 - فلترة المحذوفات]
       if (data['isDeleted'] == true) return false;
       final privacy = data['privacy']?? 'public';
-      final isMystery = data['isMysteryBox'] == true;
-      final boxSold = data['boxSold'] == true;
-      final boxOwnedByUid = data['boxOwnedByUid'];
-      final ownerUid = data['uid'];
-      if (isMystery) {
-        final canView = currentUserId == ownerUid || currentUserId == boxOwnedByUid;
-        if (!canView) return false;
-        if (!boxSold && currentUserId!= ownerUid) return false;
-      }
       if (privacy == 'public') return true;
       if (privacy == 'friends') return currentUserId == widget.uid;
       return false;
@@ -1912,12 +1899,7 @@ Widget build(BuildContext context) {
           if (owner != currentUserId && !auth.isFriendSync(owner)) return false;
         }
       }
-      final data = doc.data() as Map<String, dynamic>;
-      final isMystery = data['isMysteryBox'] == true;
-      if (!isMystery) return true;
-      final boxOwnedByUid = data['boxOwnedByUid'];
-      final ownerUid = data['uid'];
-      return currentUserId == ownerUid || currentUserId == boxOwnedByUid;
+      return true;
     }).toList();
   }
 
@@ -2056,52 +2038,6 @@ class _TitiGridItemState extends State<TitiGridItem> with AutomaticKeepAliveClie
   @override
   bool get wantKeepAlive => true;
 
-  // [اضافة الوان الندرة] - نفس دوال MysterySeaGrid
-  List<Color> _getRarityColors(String? rarityStr) {
-    switch (rarityStr) {
-      case 'bronze':
-        return [Colors.brown.shade400, Colors.brown.shade700];
-      case 'silver':
-        return [Colors.grey.shade400, Colors.grey.shade600];
-      case 'gold':
-        return [Colors.amber.shade400, Colors.amber.shade700];
-      case 'diamond':
-        return [Colors.cyan.shade300, Colors.blue.shade700];
-      default:
-        return [AppColors.surface, AppColors.background];
-    }
-  }
-
-  IconData _getRarityIcon(String? rarityStr) {
-    switch (rarityStr) {
-      case 'bronze':
-        return Icons.workspace_premium;
-      case 'silver':
-        return Icons.military_tech;
-      case 'gold':
-        return Icons.emoji_events;
-      case 'diamond':
-        return Icons.diamond;
-      default:
-        return Icons.inventory_2;
-    }
-  }
-
-  String _getRarityName(String? rarityStr) {
-    switch (rarityStr) {
-      case 'bronze':
-        return 'برونزي';
-      case 'silver':
-        return 'فضي';
-      case 'gold':
-        return 'ذهبي';
-      case 'diamond':
-        return 'ماسي';
-      default:
-        return 'نادر';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -2120,36 +2056,13 @@ class _TitiGridItemState extends State<TitiGridItem> with AutomaticKeepAliveClie
     final bool blurIt = isBlurred && !blurIsOwner && !blurIsFollower;
 
 
-    // [اضافة قفل الصناديق النادرة] - فحص الصلاحية
-    final String currentUserId = FirebaseAuth.instance.currentUser?.uid?? '';
-    final bool isMystery = widget.postData['isMysteryBox'] == true;
-    final bool boxSold = widget.postData['boxSold'] == true;
-    final String boxOwnedByUid = widget.postData['boxOwnedByUid']?? '';
-    final String ownerUid = widget.postData['uid']?? '';
-    final String? boxRarity = widget.postData['boxRarity']; // bronze, silver, gold, diamond
-
-    bool canViewMystery = true;
-    if (isMystery) {
-      canViewMystery = currentUserId == ownerUid || currentUserId == boxOwnedByUid;
-      if (!boxSold && currentUserId!= ownerUid) canViewMystery = false;
-    }
-
-    final rarityColors = _getRarityColors(boxRarity);
-    final bool showRarityFrame = isMystery && canViewMystery;
+    final String ownerUid = widget.postData['uid'] ?? '';
 
     return RepaintBoundary(
       child: GestureDetector(
         onTap: () async {
           if (!AudienceAccess.instance.canViewPost(widget.postData, postId: widget.postId)) return;
-          if (isMystery &&!canViewMystery) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('هذا الصندوق خاص بصاحبه والمشتري فقط', textAlign: TextAlign.center),
-                backgroundColor: AppColors.error,
-              ),
-            );
-            return;
-          }
+
 
           try {
             // نطفي الهوم مشان ما يضل شغال بالخلفية، ومنخلي البروفايل هو اللي ياخد المهمة
@@ -2190,18 +2103,6 @@ class _TitiGridItemState extends State<TitiGridItem> with AutomaticKeepAliveClie
           decoration: BoxDecoration(
             color: AppColors.background,
             borderRadius: BorderRadius.circular(8),
-            border: showRarityFrame
-        ? Border.all(color: rarityColors[0], width: 2.5)
-              : null,
-            boxShadow: showRarityFrame
-        ? [
-                  BoxShadow(
-                    color: rarityColors[0].withValues(alpha: 0.5),
-                    blurRadius: 12,
-                    spreadRadius: 1,
-                  ),
-                ]
-              : [],
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
@@ -2253,68 +2154,6 @@ class _TitiGridItemState extends State<TitiGridItem> with AutomaticKeepAliveClie
                     }
                   },
                 ),
-                // [اضافة شارة الصندوق النادر] - تظهر للمالك والمشتري فقط
-                if (isMystery && canViewMystery)
-                  Positioned(
-                    top: 5,
-                    left: 5,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: rarityColors,
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(5),
-                        boxShadow: [
-                          BoxShadow(
-                            color: rarityColors[0].withValues(alpha: 0.7),
-                            blurRadius: 6,
-                            spreadRadius: 0,
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(_getRarityIcon(boxRarity),
-                            color: AppColors.black, size: 11),
-                          const SizedBox(width: 2),
-                          Text(
-                            _getRarityName(boxRarity),
-                            style: const TextStyle(
-                              color: AppColors.black,
-                              fontSize: 9,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                // [اضافة قفل الصناديق النادرة] - overlay القفل
-                if (isMystery &&!canViewMystery)
-                  Container(
-                    color: AppColors.background.withValues(alpha: 0.8),
-                    child: const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.lock, color: AppColors.primary, size: 40),
-                          SizedBox(height: 8),
-                          Text(
-                            'صندوق خاص',
-                            style: TextStyle(
-                              color: AppColors.textPrimary,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                 if (privacyStatus == 'friends')
                   const Positioned(
                     top: 5,

@@ -814,7 +814,6 @@ exports.onPostCreated = onDocumentCreated({
     const authorId = postData.uid || postData.userId || postData.ownerId || postData.fromUid;
     if (!authorId) return null;
 
-    if (postData.isMysteryBox === true) return null;
 
     // [إصلاح ثغرة الخصوصية] - أنا فقط و الأصدقاء فقط ما يتوزعو
     const privacy = postData.privacy || 'public';
@@ -1013,7 +1012,6 @@ exports.onPostUpdated = onDocumentUpdated({
     const postId = event.params.postId;
     const authorId = postData.uid || postData.userId || postData.ownerId || postData.fromUid;
     if (!authorId) return null;
-    if (postData.isMysteryBox === true) return null;
     // [إصلاح ثغرة الخصوصية]
     const privacyUp = postData.privacy || 'public';
     if (privacyUp === 'private' || privacyUp === 'only_me') return null;
@@ -1067,14 +1065,13 @@ exports.onFollowCreated = onDocumentCreated({
 
         const filteredDocs = postsSnap.docs.filter(d => {
           const p = d.data();
-          if (p.isMysteryBox === true) return false;
           const pr = p.privacy || 'public';
           if (pr === 'private' || pr === 'only_me' || pr === 'friends') return false;
           return true;
         }).slice(0,20);
 
         if (filteredDocs.length === 0) {
-            console.log('No posts after filtering mystery box');
+            console.log('No posts after privacy filtering');
             return null;
         }
 
@@ -1103,7 +1100,7 @@ exports.onFollowCreated = onDocumentCreated({
         if (isMutual.exists) {
             console.log(`[FriendsFeed] Mutual detected ${followerId} <-> ${followedId}`);
             const otherPostsSnap = await db.collection("posts").where("uid", "==", followerId).orderBy("createdAt", "desc").limit(30).get();
-            const otherFiltered = otherPostsSnap.docs.filter(d => d.data().isMysteryBox!== true).slice(0,20);
+            const otherFiltered = otherPostsSnap.docs.slice(0,20);
             const batch2 = db.batch();
             otherFiltered.forEach(doc => {
                 const ref = db.collection("users").doc(followedId).collection("friendsFeed").doc(doc.id);
@@ -1161,7 +1158,6 @@ exports.updateTrendingFeed = onSchedule({
 
     // [حل الفاتورة] - كنا نقرا كل البوستات، هلا بس اخر 5000 مشان ما نفجر القراءات
     const postsSnapshot = await db.collection('posts')
- .where('isMysteryBox', '==', false)
  .orderBy('createdAt', 'desc')
  .limit(200)
  .get();
@@ -1277,7 +1273,7 @@ exports.refreshForYouScheduled = onSchedule({
                 db.collection('users').doc(myUid).get(),
                 db.collection(`users/${myUid}/following`).limit(50).get(),
                 db.collection(`userInteractions`).where('userId','==',myUid).limit(20).get(),
-                db.collection('posts').where('isMysteryBox','==',false).orderBy('createdAt','desc').limit(30).get()
+                db.collection('posts').orderBy('createdAt','desc').limit(30).get()
             ]);
 
             const blockedIds = new Set(blockedSnap.docs.map(d=>d.id));
@@ -1362,7 +1358,7 @@ exports.getForYouOnScroll = onCall({ region: "europe-west1" }, async (request) =
         db.collection('users').doc(myUid).get(),
         db.collection(`users/${myUid}/following`).limit(50).get(),
         db.collection(`userInteractions`).where('userId','==',myUid).limit(100).get(),
-        db.collection('posts').where('isMysteryBox','==',false).orderBy('createdAt','desc').limit(100).get(),
+        db.collection('posts').orderBy('createdAt','desc').limit(100).get(),
         db.collection(`users/${myUid}/hashtagInterests`).orderBy('count','desc').limit(10).get()
     ]);
     const blockedIds = new Set(blockedSnap.docs.map(d=>d.id));
@@ -1386,7 +1382,6 @@ exports.getForYouOnScroll = onCall({ region: "europe-west1" }, async (request) =
         if (blockedByIds.has(data.uid)) continue; // [Two-Way] اذا هو حاظرني لا تبعتلي فيديوهاته ولا تبعت فيديوهاتي لعندو
         if (data.privacy === 'private' || data.privacy === 'only_me' || data.privacy === 'friends') continue;
         if (data.ownerIsPrivateAccount === true) continue;
-        if (data.isMysteryBox === true) continue;
         if (data.uid === myUid) continue;
         let score = 0;
         if (followingIds.has(data.uid)) score += 50;

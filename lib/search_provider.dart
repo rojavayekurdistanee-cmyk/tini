@@ -495,15 +495,6 @@ class SearchProvider extends ChangeNotifier {
 
     if (data['processingStatus'] == 'processing') return false;
 
-    // [تعديل] اخفاء الصندوق النادر عن الغريب
-    final bool isBox = data['isMysteryBox']?? false;
-    if (isBox) {
-      final String ownerId = data['uid']?? '';
-      final String buyerId = data['boxOwnedByUid']?? '';
-      if (_myUid!= ownerId && _myUid!= buyerId) {
-        return false;
-      }
-    }
     return true;
   }
 

@@ -20,7 +20,6 @@ import 'hashtag_service.dart';
 import 'location_picker_sheet.dart';
 import 'video_processor.dart';
 import 'package:gal/gal.dart';
-import 'mystery_box_rules_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'moderation_service.dart';
 import 'dart:convert';
@@ -236,10 +235,6 @@ class _PostPublishScreenState extends State<PostPublishScreen> {
   // [Tini Logic]: صمام أمان لمنع التخبط عند اختيار الهاشتاج
   bool _isApplyingHashtag = false;
 
-    // [Tini V30.4]: متغيرات بحر الصناديق - سعر ثابت
-  bool _isMysteryBox = false;
-  String? _selectedBoxRarity; // null = مش صندوق | bronze/silver/gold/diamond
-  final TextEditingController _boxTitleController = TextEditingController(); // عنوان الصندوق الإجباري
 
   // ألوان الهوية البصرية المعتمدة لـ Tini
   final Color titiTeal = const Color(0xFF009688);
@@ -317,7 +312,6 @@ setState(() {
     _pendingPosition.dispose();
     _captionController.removeListener(_onCaptionChanged);
     _captionController.dispose();
-    _boxTitleController.dispose();
     _videoPlayerController?.pause();
     _videoPlayerController?.dispose();
     _duetController?.pause(); // [إضافة]
@@ -398,28 +392,6 @@ setState(() {
     }
     setState(() => _isLoading = true);
 
-    // Retain the original mandatory box title/rules gate before publishing.
-    if (_isMysteryBox && _selectedBoxRarity != null) {
-      final title = _boxTitleController.text.trim();
-      if (title.isEmpty || title.length < 10) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(title.isEmpty
-              ? 'عنوان الصندوق إجباري ولا يمكن النشر بدونه'
-              : 'العنوان يجب أن يكون 10 أحرف على الأقل'),
-          backgroundColor: errorRed,
-        ));
-        setState(() => _isLoading = false);
-        return;
-      }
-      final accepted = await Navigator.push<bool>(context, MaterialPageRoute(
-        builder: (_) => MysteryBoxRulesScreen(rarity: _selectedBoxRarity!),
-      ));
-      if (!mounted) return;
-      if (accepted != true) {
-        setState(() => _isLoading = false);
-        return;
-      }
-    }
     if (!mounted) return;
     final auth = Provider.of<custom.AuthProvider>(context, listen: false);
     if (!auth.profileCompleted || !auth.isAuthChecked) {
@@ -439,8 +411,6 @@ setState(() {
     final mentions = List<String>.of(_selectedMentions);
     final hashtags = HashtagService().extractHashtags(caption);
     final location = postProv.selectedLocation;
-    final boxTitle = _isMysteryBox ? _boxTitleController.text.trim() : '';
-    final boxRarity = _selectedBoxRarity;
     final privacy = _privacy;
     final commentPrivacy = _commentPrivacy;
     final allowDownload = _allowDownload;
@@ -515,13 +485,7 @@ setState(() {
           throw StateError('الوصف محظور: ${captionRes.reason}');
         }
       }
-      if (boxTitle.isNotEmpty) {
-        final boxRes = await ModerationService.checkTextDetailed(boxTitle);
-        if (boxRes.isUnavailable) {
-          throw StateError('تعذّر فحص عنوان الصندوق. لم يُنشر الفيديو؛ حاول مجدداً.');
-        }
-        if (!boxRes.allowed) throw StateError('عنوان الصندوق محظور: ${boxRes.reason}');
-      }
+
       var videoRes = ModerationResult(allowed: true);
       Directory? framesDir;
       try {
@@ -653,7 +617,7 @@ setState(() {
         finalVideoAlreadyEncoded: finalVideoAlreadyEncoded,
         thumbnailPath: thumbPath ?? '',
         videoWidth: videoWidth, videoHeight: videoHeight,
-        description: caption, boxTitle: boxTitle,
+        description: caption,
         fullName: fullName, username: username, profileImg: profileImg,
         uid: uid, ownerIsPrivateAccount: isPrivate,
         originalAuthorName: originalAuthorName,
@@ -667,7 +631,6 @@ setState(() {
         isDuet: isDuet, duetFrom: duetUrl,
         songTitle: songTitle, songArtist: songArtist,
         songCover: songCover, songSource: songSource,
-        isMysteryBox: boxRarity != null, boxRarity: boxRarity,
       );
       if (realPostId == null) {
         throw StateError('تعذّر رفع الفيديو. لم يكتمل النشر.');
@@ -1131,58 +1094,6 @@ setState(() {
                               ),
                           ],
                         ),
-                        // [Tini V30.3]: واجهة بحر الصناديق - تمت الإضافة هنا
-                        _buildSwitchTile(
-                          Icons.inventory_2_outlined,
-                          "📦 نشر كصندوق نادر",
-                          _isMysteryBox,
-                          (v) => setState(() => _isMysteryBox = v),
-                        ),
-                        if (_isMysteryBox)
-  Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          "اختر نوع الصندوق",
-          style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 12),
-        _buildRarityCard('bronze', 'برونزي', 50, Icons.workspace_premium, Colors.brown),
-        _buildRarityCard('silver', 'فضي', 250, Icons.military_tech, Colors.grey),
-        _buildRarityCard('gold', 'ذهبي', 600, Icons.emoji_events, Colors.amber),
-        _buildRarityCard('diamond', 'ماسي', 1000, Icons.diamond, Colors.cyan),
-      ],
-    ),
-  ),
-
-  if (_isMysteryBox && _selectedBoxRarity != null)
-  Padding(
-    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-    child: TextField(
-      controller: _boxTitleController,
-      maxLength: 60,
-      textAlign: TextAlign.right,
-      style: const TextStyle(color: Colors.white),
-      decoration: InputDecoration(
-        labelText: 'عنوان الصندوق * إجباري',
-        labelStyle: const TextStyle(color: Color(0xFFE53935)),
-        hintText: 'مثال: سر زيادة المتابعين 10K بشهر',
-        hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
-        filled: true,
-        fillColor: surfaceDark,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: Color(0xFFE53935), width: 1.5),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: Color(0xFFE53935), width: 2),
-        ),
-      ),
-    ),
-  ),
                         const Divider(color: Colors.white10, thickness: 1),
                         Padding(
                           padding: const EdgeInsets.symmetric(
@@ -1516,44 +1427,7 @@ setState(() {
 
 
 
-  Widget _buildRarityCard(String rarity, String title, int price, IconData icon, Color color) {
-  final bool isSelected = _selectedBoxRarity == rarity;
-  return GestureDetector(
-    onTap: () {
-      setState(() {
-        _selectedBoxRarity = isSelected ? null : rarity;
-      });
-    },
-    child: Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isSelected ? titiTeal.withValues(alpha:0.2) : surfaceDark,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isSelected ? titiTeal : Colors.white12,
-          width: isSelected ? 2 : 1,
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('$price عملة', style: TextStyle(color: titiTeal, fontSize: 13)),
-              ],
-            ),
-          ),
-          if (isSelected) Icon(Icons.check_circle, color: titiTeal, size: 22),
-        ],
-      ),
-    ),
-  );
-}
+
 
   void _onCaptionChanged() {
     if (!mounted || _isApplyingHashtag) return;

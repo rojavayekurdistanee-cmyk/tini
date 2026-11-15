@@ -1490,7 +1490,6 @@ class _PostItemContentState extends State<PostItemContent>
   @override
   void initState() {
     super.initState();
-    _markBoxAsOpenedIfNeeded();
     _audioController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 5),
@@ -1503,19 +1502,7 @@ class _PostItemContentState extends State<PostItemContent>
     super.dispose();
   }
 
-  void _markBoxAsOpenedIfNeeded() {
-    if (!_canInteract || widget.index != widget.currentIndex) return;
-    final postData = widget.postDoc.data() as Map<String, dynamic>;
-    final bool isMysteryBox = postData['isMysteryBox']?? false;
-    if (!isMysteryBox) return;
-    final String? boxOwnedByUid = postData['boxOwnedByUid'];
-    final String currentUid = widget.auth.uid;
-    if (boxOwnedByUid!= currentUid) return;
-    final dynamic boxOpenedAt = postData['boxOpenedAt'];
-    if (boxOpenedAt!= null) return;
-    debugPrint("📦 [Titi Box]: أول فتح للصندوق ${widget.postDoc.id}");
-    widget.postProvider.markBoxAsOpened(widget.postDoc.id);
-  }
+
 
   void _toggleComments(bool show) {
     setState(() {

@@ -36,23 +36,17 @@ class Transaction {
     'purchase',
     'reward',
     'throne_refund',
-    'box_refund',
-    'box_sale',
     'test_grant',
     'migration',
     'refund_reversed',
   ].contains(type);
-  bool get isSettlement => ['throne_settle', 'box_settle'].contains(type);
+  bool get isSettlement => ['throne_settle'].contains(type);
   String get label =>
       const {
         'purchase': 'شراء عملات',
         'throne_reserve': 'حجز مزايدة العرش',
         'throne_refund': 'إعادة حجز العرش',
         'throne_settle': 'تسوية حجز التتويج',
-        'box_reserve': 'حجز صندوق',
-        'box_refund': 'إعادة حجز صندوق',
-        'box_sale': 'بيع صندوق',
-        'box_settle': 'تسوية شراء صندوق',
         'chargeback': 'استرجاع دفعة',
         'refund_reversed': 'إلغاء استرجاع دفعة',
         'test_grant': 'رصيد اختبار',
@@ -145,8 +139,7 @@ class WalletProvider extends ChangeNotifier {
                 ? (data?['tiniBalance'] as num? ?? 0).toInt()
                 : 0;
             _reserved = ready
-                ? (data?['throneReservedPoints'] as num? ?? 0).toInt() +
-                      (data?['boxReservedPoints'] as num? ?? 0).toInt()
+                ? (data?['throneReservedPoints'] as num? ?? 0).toInt()
                 : 0;
             _debt = (data?['walletDebt'] as num? ?? 0).toInt();
             _accountToken = ready

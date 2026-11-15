@@ -147,7 +147,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
       final query = await FirebaseFirestore.instance
          .collection('posts')
          .where('songTitle', isEqualTo: soundTitle)
-         .where('isMysteryBox', isEqualTo: false) // [تعديل] اخفاء الصناديق النادرة
+
          .orderBy('createdAt', descending: true)
          .limit(50)
          .get();
@@ -194,7 +194,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
       final query = await FirebaseFirestore.instance
          .collection('posts')
          .where('hashtags', arrayContains: tagName)
-         .where('isMysteryBox', isEqualTo: false) // [تعديل] اخفاء الصناديق النادرة
+
          .orderBy('createdAt', descending: true)
          .limit(50)
          .get();
