@@ -1,4 +1,5 @@
 import 'user_documents.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
 import 'dart:ui';
@@ -130,7 +131,9 @@ class ProfileSubMenu extends StatelessWidget {
 class ProfileScreen extends StatefulWidget {
   final String? userId;
   final VoidCallback? onBackToHome;
-  const ProfileScreen({super.key, this.userId, this.onBackToHome});
+  final bool resolveNotificationIdentity;
+  const ProfileScreen({super.key, this.userId, this.onBackToHome,
+    this.resolveNotificationIdentity = false});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -179,6 +182,7 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
 
   // إضافة دعم عرض بروفايل مستخدم آخر
   Map<String, dynamic>? viewedUserData;
+  bool _notificationIdentityRequested = false;
   bool isOwnProfile = true;
   String viewedUid = '';
   String followingStatus = 'none'; // none / following / follower / friends
@@ -204,6 +208,18 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
           _favoritePostIsVisible(doc.data(), doc.id));
     });
     _syncProfileTabAccess();
+  }
+
+  Future<void> _resolveNotificationIdentity() async {
+    try {
+      // Older accounts may not yet have their server-projected public identity.
+      // Keep reading public_profiles; never read another account's private doc.
+      await FirebaseFunctions.instanceFor(region: 'europe-west1')
+          .httpsCallable('ensureNotificationProfile')
+          .call<void>({'uid': viewedUid});
+    } catch (error) {
+      debugPrint('Notification profile identity refresh failed: $error');
+    }
   }
 
   Future<void> _logProfileVisit(String profileOwnerId) async {
@@ -283,6 +299,13 @@ class _ProfileScreenState extends State<ProfileScreen> with TickerProviderStateM
         _profilePrivacySub = UserDocuments.readable(FirebaseFirestore.instance, viewedUid).snapshots().listen((snapshot) {
           if (!mounted) return;
           final data = snapshot.data();
+          if (widget.resolveNotificationIdentity &&
+              !_notificationIdentityRequested &&
+              ((data?['fullName'] ?? '').toString().trim().isEmpty ||
+               (data?['username'] ?? '').toString().trim().isEmpty)) {
+            _notificationIdentityRequested = true;
+            unawaited(_resolveNotificationIdentity());
+          }
           _liveProfilePrivacy = data;
           setState(() {
             viewedUserData = data;

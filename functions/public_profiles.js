@@ -1,6 +1,7 @@
 'use strict';
 const {getFirestore} = require('firebase-admin/firestore');
 const {onDocumentWritten} = require('firebase-functions/v2/firestore');
+const {onCall, HttpsError} = require('firebase-functions/v2/https');
 const {isDeepStrictEqual} = require('node:util');
 
 // Explicit allowlist: new account fields are PRIVATE unless deliberately added.
@@ -51,4 +52,15 @@ async function syncProfile(db, uid) {
 exports.syncPublicProfile = onDocumentWritten({
   region: 'europe-west1', document: 'users/{uid}', retry: true,
 }, event => syncProfile(getFirestore(), event.params.uid));
+// Repair a legacy/missing public projection when a follow notification opens it.
+// The caller cannot supply profile fields, and receives no private account data.
+exports.ensureNotificationProfile = onCall({region: 'europe-west1'}, async request => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'Sign in required.');
+  const uid = request.data?.uid;
+  if (typeof uid !== 'string' || !uid.trim() || uid.length > 128 || uid.includes('/')) {
+    throw new HttpsError('invalid-argument', 'A valid user ID is required.');
+  }
+  await syncProfile(getFirestore(), uid);
+  return {ok: true};
+});
 Object.defineProperty(exports, 'testing', {value: {PUBLIC_FIELDS, projectProfile, syncProfile}});

@@ -177,6 +177,7 @@ class BannerVideoNavigation {
     BannerVideoPlaybackDriver? playback,
     bool replaceStack = false,
     Future<void> Function()? prepareColdStart,
+    bool reservePlaybackBeforePush = false,
   }) async {
     VideoPlaybackOrigin? origin;
     final port = playback ?? _EnginePlaybackPort();
@@ -187,7 +188,7 @@ class BannerVideoNavigation {
     final handoff = VideoPlaybackHandoff(port, queue);
     final session = _BannerPlaybackSession(url, viewer, port, handoff);
     // Reserve ownership before Home/Splash can finish their delayed startup.
-    session.starting = prepareColdStart != null;
+    session.starting = prepareColdStart != null || reservePlaybackBeforePush;
     VideoPlaybackRegistry.add(session.lease);
     MaterialPageRoute<void>? route;
     try {
@@ -283,6 +284,13 @@ class _BannerPlaybackSession {
         !closed &&
         sameViewer &&
         VideoPlaybackRegistry.isTop(lease);
+    // Profile notifications own silence until Back restores the source video.
+    if (url.isEmpty) {
+      await port.operations.run(() async {
+        if (valid()) await port.silence();
+      });
+      return;
+    }
     await handoff.activate(
       coveredSnapshot ??
           VideoPlaybackSnapshot(engine: VideoPlaybackEngine.home, url: url),
