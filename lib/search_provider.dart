@@ -5,6 +5,73 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'audience_access.dart';
 
+// A single ordered source and a buffer keep every matching document reachable.
+class SearchPageBuffer<T> {
+  SearchPageBuffer({required this.fetch, required this.matches, this.batchSize = 100});
+  final Future<List<T>> Function(T? cursor, int limit) fetch;
+  final bool Function(T item) matches;
+  final int batchSize;
+  T? _cursor;
+  bool _exhausted = false;
+  final List<T> _pending = [];
+  bool get hasMore => _pending.isNotEmpty || !_exhausted;
+
+  Future<List<T>> take(int count, bool Function() valid) async {
+    while (_pending.length < count && !_exhausted && valid()) {
+      final batch = await fetch(_cursor, batchSize);
+      if (!valid()) return [];
+      if (batch.isNotEmpty) _cursor = batch.last;
+      _exhausted = batch.length < batchSize;
+      _pending.addAll(batch.where(matches));
+    }
+    if (!valid()) return [];
+    final result = _pending.take(count).toList();
+    _pending.removeRange(0, result.length);
+    return result;
+  }
+}
+
+class SearchText {
+  static bool post(Map<String, dynamic> data, String query) {
+    final q = query.trim().toLowerCase();
+    final tag = q.replaceAll('#', '');
+    final tags = (data['hashtags_lowercase'] ?? data['hashtags'] ?? []) as List;
+    return (data['description_lowercase'] ?? data['description'] ?? '')
+            .toString().toLowerCase().contains(q) ||
+        (data['location'] ?? '').toString().toLowerCase().contains(q) ||
+        tags.any((value) => value.toString().toLowerCase() == tag);
+  }
+
+  static bool song(Map<String, dynamic> data, String query) {
+    final q = query.trim().toLowerCase();
+    return (data['songTitle_lowercase'] ?? data['songTitle'] ?? '')
+            .toString().toLowerCase().contains(q) ||
+        (data['songArtist'] ?? '').toString().toLowerCase().contains(q);
+  }
+}
+
+Future<List<T>> searchSectionOrEmpty<T>(Future<List<T>> Function() action,
+    void Function(Object error) onError) async {
+  try {
+    return await action();
+  } catch (error) {
+    onError(error);
+    return [];
+  }
+}
+
+class SearchFeedAccess {
+  static bool allows(Map<String, dynamic> post, String viewer, Set<String> mutualFriends) {
+    final privacy = (post['privacy'] ?? 'public').toString().toLowerCase();
+    if (privacy == 'private' || privacy == 'only_me') return false;
+    if (privacy == 'friends') {
+      final owner = (post['uid'] ?? '').toString();
+      return owner.isNotEmpty && (owner == viewer || mutualFriends.contains(owner));
+    }
+    return true;
+  }
+}
+
 class SearchProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -12,6 +79,27 @@ class SearchProvider extends ChangeNotifier {
   StreamSubscription<User?>? _authSubscription;
   int _searchVersion = 0;
   bool _disposed = false;
+  Timer? _searchDebounce;
+  final Set<String> _failedSections = {};
+  bool get hasSearchErrors => _failedSections.isNotEmpty;
+
+  void scheduleSearch(String query) {
+    _searchDebounce?.cancel();
+    if (query.trim().isEmpty) { clearSearch(); return; }
+    _searchVersion++; // Cancel older work immediately, before the next request.
+    _isLoading = true;
+    _currentQuery = query.trim().toLowerCase();
+    notifyListeners();
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () => search(query));
+  }
+
+  Future<List<Map<String, dynamic>>> _searchSection(String name,
+      Future<List<Map<String, dynamic>>> Function() action, int version, String uid) async {
+    return searchSectionOrEmpty(action, (error) {
+      if (_requestIsCurrent(version, uid)) _failedSections.add(name);
+      debugPrint('Search $name failed: $error');
+    });
+  }
 
   SearchProvider() {
     _myUid = _auth.currentUser?.uid ?? '';
@@ -49,6 +137,7 @@ class SearchProvider extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _searchDebounce?.cancel();
     _searchVersion++;
     _authSubscription?.cancel();
     _audience.removeListener(_onAudienceChanged);
@@ -103,7 +192,7 @@ class SearchProvider extends ChangeNotifier {
   String _myUid = '';
 
   // [جديد - Pagination] متغيرات التحميل التدريجي
-  DocumentSnapshot? _lastPostDoc;
+  SearchPageBuffer<QueryDocumentSnapshot<Map<String, dynamic>>>? _postPages;
   bool _hasMorePosts = true;
   bool _isLoadingMore = false;
 
@@ -153,6 +242,7 @@ class SearchProvider extends ChangeNotifier {
 
   // البحث الرئيسي الموحد
   Future<void> search(String query) async {
+    _searchDebounce?.cancel();
     if (query.trim().isEmpty) {
       clearSearch();
       return;
@@ -162,6 +252,7 @@ class SearchProvider extends ChangeNotifier {
     final uid = _auth.currentUser?.uid ?? '';
     _myUid = uid;
     _isLoading = true;
+    _failedSections.clear();
     _currentQuery = query.trim().toLowerCase();
     final searchQuery = _currentQuery;
     _users = [];
@@ -170,7 +261,7 @@ class SearchProvider extends ChangeNotifier {
     _songs = [];
 
     // [جديد] إعادة تعيين Pagination
-    _lastPostDoc = null;
+    _postPages = null;
     _hasMorePosts = true;
     _isLoadingMore = false;
 
@@ -181,10 +272,10 @@ class SearchProvider extends ChangeNotifier {
       if (!_requestIsCurrent(version, uid)) return;
       // تنفيذ 4 بحوث بالتوازي
       final results = await Future.wait([
-        _searchUsers(searchQuery),
-        _searchPosts(searchQuery, version: version, viewerUid: uid),
-        _searchHashtags(searchQuery),
-        _searchSongs(searchQuery),
+        _searchSection('الأشخاص', () => _searchUsers(searchQuery), version, uid),
+        _searchSection('الفيديوهات', () => _searchPosts(searchQuery, version: version, viewerUid: uid), version, uid),
+        _searchSection('الهاشتاقات', () => _searchHashtags(searchQuery), version, uid),
+        _searchSection('الأصوات', () => _searchSongs(searchQuery, version, uid), version, uid),
       ]);
 
       if (!_requestIsCurrent(version, uid)) return;
@@ -194,6 +285,7 @@ class SearchProvider extends ChangeNotifier {
       _songs = results[3];
 
     } catch (e) {
+      if (_requestIsCurrent(version, uid)) _failedSections.add('البحث');
       debugPrint('Search Error: $e');
     }
 
@@ -265,102 +357,42 @@ class SearchProvider extends ChangeNotifier {
     return results;
   }
 
-  // 2. البحث عن فيديوهات [معدل - Pagination]
-  Future<List<Map<String, dynamic>>> _searchPosts(String q, {DocumentSnapshot? startAfter, required int version, required String viewerUid}) async {
-    final List<Map<String, dynamic>> results = [];
-    final seenIds = <String>{};
-
-    // أ. البحث بالهاشتاق
-    var hashtagQueryRef = _firestore
-.collection('posts')
-.where('hashtags_lowercase', arrayContains: q.replaceAll('#', ''))
-.orderBy('views', descending: true)
-.limit(30);
-
-    if (startAfter!= null) {
-      hashtagQueryRef = hashtagQueryRef.startAfterDocument(startAfter);
-    }
-
-    final hashtagQuery = await hashtagQueryRef.get();
-
-    // ب. البحث بالوصف
-    var descQueryRef = _firestore
-.collection('posts')
-.where('description_lowercase', isGreaterThanOrEqualTo: q)
-.where('description_lowercase', isLessThanOrEqualTo: '$q\uf8ff')
-.limit(30);
-
-    if (startAfter!= null) {
-      descQueryRef = descQueryRef.startAfterDocument(startAfter);
-    }
-
-    final descQuery = await descQueryRef.get();
-
-    final allDocs = [...hashtagQuery.docs,...descQuery.docs];
-
-    for (var doc in allDocs) {
-      if (seenIds.contains(doc.id)) continue;
-      seenIds.add(doc.id);
-
-      final data = doc.data();
-
-      // تطبيق الفلاتر
-      if (!_passesPostFilters(data)) continue;
-      _audience.trackPost(data, postId: doc.id);
-
-      // فحص النص
-      final description = (data['description_lowercase']?? '').toString();
-      final location = (data['location']?? '').toString().toLowerCase();
-      final hashtags = List<String>.from(data['hashtags_lowercase']?? []).join(' ');
-
-      if (description.contains(q) ||
-          location.contains(q) ||
-          hashtags.contains(q) ||
-          hashtagQuery.docs.contains(doc)) {
-
-        results.add({
-          'type': 'post',
-     ...data,
-          'postId': doc.id,
-          'username': data['username']?? '',
-          'profileImg': data['profileImg']?? '',
-          'thumbnailUrl': data['thumbnailUrl']?? '',
-          'description': data['description']?? '',
-          'views': data['views']?? 0,
-          'isFriend': _myFollowingList.contains(data['uid']),
-        });
-      }
-    }
-
-    // ترتيب: أصدقاء أولاً ثم الأكثر مشاهدة
-    results.sort((a, b) {
-      final aFriend = a['isFriend']? 1 : 0;
-      final bFriend = b['isFriend']? 1 : 0;
-      if (aFriend!= bFriend) return bFriend.compareTo(aFriend);
-      return (b['views']?? 0).compareTo(a['views']?? 0);
-    });
-
-    final finalResults = results.take(30).toList();
-
-    // [جديد] حفظ آخر doc للـ pagination
+  // Substring search needs scanning: Firestore prefix ranges cannot find
+  // words inside descriptions. Read ordered batches and retain surplus matches.
+  Future<List<Map<String, dynamic>>> _searchPosts(String q,
+      {required int version, required String viewerUid}) async {
+    final pages = _postPages ??= SearchPageBuffer<QueryDocumentSnapshot<Map<String, dynamic>>>(
+      fetch: (cursor, limit) async {
+        Query<Map<String, dynamic>> query = _firestore.collection('posts')
+            .orderBy(FieldPath.documentId).limit(limit);
+        if (cursor != null) query = query.startAfterDocument(cursor);
+        return (await query.get()).docs;
+      },
+      matches: (doc) => SearchText.post(doc.data(), q) && _passesPostFilters(doc.data()),
+    );
+    final docs = await pages.take(30, () => _requestIsCurrent(version, viewerUid));
     if (!_requestIsCurrent(version, viewerUid)) return [];
-    if (finalResults.isNotEmpty && startAfter == null) {
-      // نحفظ آخر doc من الاستعلام الأصلي
-      if (allDocs.isNotEmpty) {
-        _lastPostDoc = allDocs.last;
-      }
-    } else if (finalResults.isNotEmpty && startAfter!= null) {
-      if (allDocs.isNotEmpty) {
-        _lastPostDoc = allDocs.last;
-      }
-    }
-
-    return finalResults;
+    _hasMorePosts = pages.hasMore;
+    final results = docs.map((doc) {
+      final data = doc.data();
+      _audience.trackPost(data, postId: doc.id);
+      return <String, dynamic>{
+        'type': 'post', ...data, 'postId': doc.id,
+        'username': data['username'] ?? '', 'profileImg': data['profileImg'] ?? '',
+        'thumbnailUrl': data['thumbnailUrl'] ?? '', 'description': data['description'] ?? '',
+        'views': data['views'] ?? 0, 'isFriend': _myFollowingList.contains(data['uid']),
+      };
+    }).toList();
+    results.sort((a, b) {
+      final friends = (b['isFriend'] == true ? 1 : 0).compareTo(a['isFriend'] == true ? 1 : 0);
+      return friends != 0 ? friends : (b['views'] as num).compareTo(a['views'] as num);
+    });
+    return results;
   }
 
   // [جديد] تحميل المزيد من الفيديوهات
   Future<void> loadMorePosts() async {
-    if (!_hasMorePosts || _isLoadingMore || _currentQuery.isEmpty || _lastPostDoc == null) return;
+    if (_isLoading || !_hasMorePosts || _isLoadingMore || _currentQuery.isEmpty || _postPages == null) return;
 
     final version = _searchVersion;
     final uid = _auth.currentUser?.uid ?? '';
@@ -368,7 +400,7 @@ class SearchProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final moreResults = await _searchPosts(_currentQuery, startAfter: _lastPostDoc,
+      final moreResults = await _searchPosts(_currentQuery,
           version: version, viewerUid: uid);
       if (!_requestIsCurrent(version, uid)) return;
 
@@ -378,12 +410,13 @@ class SearchProvider extends ChangeNotifier {
         final newPosts = moreResults.where((p) =>!existingIds.contains(p['postId'])).toList();
 
         _posts.addAll(newPosts);
-        _hasMorePosts = newPosts.length >= 20; // إذا جبنا أقل من 20، غالباً خلصنا
+        // Source exhaustion, rather than filtered result count, controls paging.
       } else {
         _hasMorePosts = false;
       }
 
     } catch (e) {
+      if (_requestIsCurrent(version, uid)) _failedSections.add('الفيديوهات');
       debugPrint('Load More Error: $e');
       if (!_requestIsCurrent(version, uid)) return;
       _hasMorePosts = false;
@@ -414,43 +447,32 @@ class SearchProvider extends ChangeNotifier {
   }
 
   // 4. البحث عن أصوات
-  Future<List<Map<String, dynamic>>> _searchSongs(String q) async {
-    final query = await _firestore
-.collection('posts')
-.where('songTitle_lowercase', isGreaterThanOrEqualTo: q)
-.where('songTitle_lowercase', isLessThanOrEqualTo: '$q\uf8ff')
-.limit(100)
-.get();
-
-    final Map<String, Map<String, dynamic>> uniqueSongs = {};
-
-    for (var doc in query.docs) {
-      final data = doc.data();
-      if (!_passesPostFilters(data)) continue;
-      _audience.trackPost(data, postId: doc.id);
-
-      final title = (data['songTitle_lowercase']?? '').toString();
-      final artist = (data['songArtist']?? '').toString().toLowerCase();
-
-      if (title.contains(q) || artist.contains(q)) {
+  Future<List<Map<String, dynamic>>> _searchSongs(String q, int version, String uid) async {
+    QueryDocumentSnapshot<Map<String, dynamic>>? cursor;
+    final uniqueSongs = <String, Map<String, dynamic>>{};
+    var exhausted = false;
+    while (!exhausted && uniqueSongs.length < 15 && _requestIsCurrent(version, uid)) {
+      Query<Map<String, dynamic>> query = _firestore.collection('posts')
+          .orderBy(FieldPath.documentId).limit(100);
+      if (cursor != null) query = query.startAfterDocument(cursor);
+      final batch = await query.get();
+      if (!_requestIsCurrent(version, uid)) return [];
+      exhausted = batch.docs.length < 100;
+      if (batch.docs.isNotEmpty) cursor = batch.docs.last;
+      for (final doc in batch.docs) {
+        final data = doc.data();
+        if (!SearchText.song(data, q) || !_passesPostFilters(data) ||
+            data['songTitle'] == null) continue;
+        _audience.trackPost(data, postId: doc.id);
         final key = '${data['songTitle']}_${data['songArtist']}';
-        if (!uniqueSongs.containsKey(key) && data['songTitle']!= null) {
-          uniqueSongs[key] = {
-            'type': 'song',
-            'title': data['songTitle'],
-            'artist': data['songArtist'],
-            'cover': data['songCover'],
-            'source': data['songSource'],
-            'uses': 1,
-            '_audienceSources': <Map<String, dynamic>>[],
-          };
-        }
-        if (uniqueSongs.containsKey(key)) {
-          (uniqueSongs[key]!['_audienceSources'] as List).add({...data, 'postId': doc.id});
-        }
+        final song = uniqueSongs.putIfAbsent(key, () => {
+          'type': 'song', 'title': data['songTitle'], 'artist': data['songArtist'],
+          'cover': data['songCover'], 'source': data['songSource'], 'uses': 1,
+          '_audienceSources': <Map<String, dynamic>>[],
+        });
+        (song['_audienceSources'] as List).add({...data, 'postId': doc.id});
       }
     }
-
     return uniqueSongs.values.take(15).toList();
   }
 
@@ -486,6 +508,8 @@ class SearchProvider extends ChangeNotifier {
   }
 
   void clearSearch() {
+    _searchDebounce?.cancel();
+    _failedSections.clear();
     _searchVersion++;
     _isLoading = false;
     _currentQuery = '';
@@ -493,7 +517,7 @@ class SearchProvider extends ChangeNotifier {
     _posts = [];
     _hashtags = [];
     _songs = [];
-    _lastPostDoc = null;
+    _postPages = null;
     _hasMorePosts = true;
     _isLoadingMore = false;
     notifyListeners();

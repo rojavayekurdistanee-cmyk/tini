@@ -39,7 +39,7 @@ class _SearchScreenState extends State<SearchScreen> {
     _controller.addListener(() {
       setState(() {});
       if (_controller.text.isNotEmpty) {
-        context.read<SearchProvider>().search(_controller.text);
+        context.read<SearchProvider>().scheduleSearch(_controller.text);
       } else {
         context.read<SearchProvider>().clearSearch();
       }
@@ -286,7 +286,8 @@ class _SearchScreenState extends State<SearchScreen> {
     if (!hasResults) {
       return Center(
         child: Text(
-          'لا توجد نتائج لـ "${_controller.text}"',
+          prov.hasSearchErrors ? 'تعذر تحميل بعض النتائج. أعد المحاولة.'
+              : 'لا توجد نتائج لـ "${_controller.text}"',
           style: TextStyle(color: Colors.white54, fontSize: 15),
         ),
       );
@@ -295,6 +296,10 @@ class _SearchScreenState extends State<SearchScreen> {
     return ListView(
       padding: EdgeInsets.zero,
       children: [
+        if (prov.hasSearchErrors)
+          const Padding(padding: EdgeInsets.all(12), child: Text(
+            'تعذر تحميل بعض النتائج. أعد البحث للمحاولة مجدداً.',
+            style: TextStyle(color: Colors.orange))),
         // الأشخاص - مفلتر
         if (filteredUsers.isNotEmpty)...[
           _buildSectionHeader('الأشخاص'),

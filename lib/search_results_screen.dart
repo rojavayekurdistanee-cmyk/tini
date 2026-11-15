@@ -24,6 +24,8 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   late TextEditingController _searchController;
+  final ScrollController _bestScroll = ScrollController();
+  final ScrollController _videosScroll = ScrollController();
 
   final Color bg = const Color(0xFF0F1720);
   final Color surface = const Color(0xFF1A222C);
@@ -36,6 +38,11 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
+    _bestScroll.addListener(_loadMoreIfNeeded);
+    _videosScroll.addListener(_loadMoreIfNeeded);
+    _tabController.addListener(() {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _loadMoreIfNeeded());
+    });
     _searchController = TextEditingController(text: widget.initialQuery);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -47,6 +54,8 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
 
   @override
   void dispose() {
+    _bestScroll.dispose();
+    _videosScroll.dispose();
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
@@ -115,6 +124,17 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
     }
   }
 
+  Future<Set<String>> _mutualFriends(String uid) async {
+    if (uid.isEmpty) return {};
+    final store = FirebaseFirestore.instance.collection('users').doc(uid);
+    final snapshots = await Future.wait([
+      store.collection('following').get(), store.collection('followers').get(),
+    ]);
+    if (!mounted || FirebaseAuth.instance.currentUser?.uid != uid) return {};
+    return snapshots[0].docs.map((doc) => doc.id).toSet()
+        .intersection(snapshots[1].docs.map((doc) => doc.id).toSet());
+  }
+
   // [جديد] فتح فيديوهات صوت معين
   Future<void> _openSoundFeed(Map<String, dynamic> sound) async {
     final viewerUid = FirebaseAuth.instance.currentUser?.uid;
@@ -131,6 +151,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
          .orderBy('createdAt', descending: true)
          .limit(50)
          .get();
+      final mutualFriends = await _mutualFriends(viewerUid ?? '');
       await Future.wait(query.docs.map((doc) async {
         final audience = AudienceAccess.instance;
         if (audience.isPostPending(doc.data(), postId: doc.id)) {
@@ -146,23 +167,9 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('لا توجد فيديوهات لهذا الصوت'), backgroundColor: Colors.orange));
         return;
       }
-      // [إضافة - فلتر الخصوصية] للجميع يطلع، اصدقاء فقط للأصدقاء المتبادلين، انا فقط ما يطلع
-      final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
-      final filtered = query.docs.where((d) {
-        final data = d.data();
-        if (!AudienceAccess.instance.canViewPost(data, postId: d.id)) return false;
-        final pr = (data['privacy'] ?? 'public').toString().toLowerCase();
-        final privacy = pr == 'everyone' ? 'public' : pr == 'only_me' ? 'private' : pr;
-        if (privacy == 'private') return false;
-        if (privacy == 'friends') {
-          final ownerId = data['uid']?.toString() ?? '';
-          if (ownerId == myUid) return true;
-          // هنا لازم تفحص متابعة متبادلة، اذا ما عندك لستة جاهزة احجب احتياطياً
-          // الحل الصحيح هو نفسه يلي في search_provider
-          return false; // منع مؤقت حتى تجيب following/followers
-        }
-        return true;
-      }).toList();
+      final filtered = query.docs.where((doc) =>
+          AudienceAccess.instance.canViewPost(doc.data(), postId: doc.id) &&
+          SearchFeedAccess.allows(doc.data(), viewerUid ?? '', mutualFriends)).toList();
       if (filtered.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('لا توجد فيديوهات لهذا الصوت'), backgroundColor: Colors.orange));
         return;
@@ -191,6 +198,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
          .orderBy('createdAt', descending: true)
          .limit(50)
          .get();
+      final mutualFriends = await _mutualFriends(viewerUid ?? '');
       await Future.wait(query.docs.map((doc) async {
         final audience = AudienceAccess.instance;
         if (audience.isPostPending(doc.data(), postId: doc.id)) {
@@ -206,21 +214,9 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('لا توجد فيديوهات لهذا الهاشتاق'), backgroundColor: Colors.orange));
         return;
       }
-      // [إضافة - فلتر الخصوصية] للجميع يطلع، اصدقاء فقط للأصدقاء المتبادلين، انا فقط ما يطلع
-      final myUid2 = FirebaseAuth.instance.currentUser?.uid ?? '';
-      final filtered = query.docs.where((d) {
-        final data = d.data();
-        if (!AudienceAccess.instance.canViewPost(data, postId: d.id)) return false;
-        final pr = (data['privacy'] ?? 'public').toString().toLowerCase();
-        final privacy = pr == 'everyone' ? 'public' : pr == 'only_me' ? 'private' : pr;
-        if (privacy == 'private') return false;
-        if (privacy == 'friends') {
-          final ownerId = data['uid']?.toString() ?? '';
-          if (ownerId == myUid2) return true;
-          return false;
-        }
-        return true;
-      }).toList();
+      final filtered = query.docs.where((doc) =>
+          AudienceAccess.instance.canViewPost(doc.data(), postId: doc.id) &&
+          SearchFeedAccess.allows(doc.data(), viewerUid ?? '', mutualFriends)).toList();
       if (filtered.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('لا توجد فيديوهات لهذا الهاشتاق'), backgroundColor: Colors.orange));
         return;
@@ -300,7 +296,14 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
             if (provider.isLoading) {
               return Center(child: CircularProgressIndicator(color: Colors.teal));
             }
-            return TabBarView(
+            WidgetsBinding.instance.addPostFrameCallback((_) => _loadMoreIfNeeded());
+            return Column(children: [
+              if (provider.hasSearchErrors)
+                Padding(padding: const EdgeInsets.all(8), child: TextButton(
+                  onPressed: () => provider.search(provider.currentQuery),
+                  child: const Text('تعذر تحميل بعض النتائج. اضغط لإعادة المحاولة'),
+                )),
+              Expanded(child: TabBarView(
               controller: _tabController,
               children: [
                 _buildBestTab(provider),
@@ -309,7 +312,8 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
                 _buildSoundsTab(provider),
                 _buildHashtagsTab(provider),
               ],
-            );
+            )),
+            ]);
           },
         ),
       ),
@@ -319,6 +323,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
   Widget _buildBestTab(SearchProvider provider) {
     final filteredPosts = _getFilteredPosts(provider.posts); // [جديد]
     return SingleChildScrollView(
+      controller: _bestScroll,
       child: Column(
         children: [
           Container(
@@ -334,7 +339,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
               ],
             ),
           ),
-          _buildVideoGrid(filteredPosts, provider), // [معدل]
+          _buildVideoGrid(filteredPosts, provider, embedded: true), // [معدل]
         ],
       ),
     );
@@ -387,14 +392,27 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
   }
 
   Widget _buildVideosTab(SearchProvider provider) {
-    return _buildVideoGrid(provider.posts, provider); // [معدل]
+    return _buildVideoGrid(provider.posts, provider);
+  }
+
+  void _loadMoreIfNeeded() {
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+    final provider = context.read<SearchProvider>();
+    if (provider.isLoading || provider.isLoadingMore || !provider.hasMorePosts) return;
+    final controller = _tabController.index == 0 ? _bestScroll
+        : _tabController.index == 1 ? _videosScroll : null;
+    if (controller != null && controller.hasClients &&
+        controller.position.extentAfter < 400) {
+      provider.loadMorePosts();
+    }
   }
 
   // [معدل] أضفنا provider parameter و GestureDetector
-  Widget _buildVideoGrid(List<Map<String, dynamic>> posts, SearchProvider provider) {
+  Widget _buildVideoGrid(List<Map<String, dynamic>> posts, SearchProvider provider, {bool embedded = false}) {
     return GridView.builder(
-      shrinkWrap: true,
-      physics: NeverScrollableScrollPhysics(),
+      controller: embedded ? null : _videosScroll,
+      shrinkWrap: embedded,
+      physics: embedded ? const NeverScrollableScrollPhysics() : const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.all(4),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
@@ -402,8 +420,9 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
         crossAxisSpacing: 4,
         mainAxisSpacing: 4,
       ),
-      itemCount: posts.length,
+      itemCount: posts.length + (provider.isLoadingMore ? 1 : 0),
       itemBuilder: (context, i) {
+        if (i == posts.length) return const Center(child: CircularProgressIndicator());
         final p = posts[i];
         return AudiencePostGate(
           post: p,
