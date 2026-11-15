@@ -509,20 +509,49 @@ class NotificationService {
   }) async {
     final viewer = FirebaseAuth.instance.currentUser?.uid;
     if (viewer == null) return;
-    // Resolve the access check before the playback scope's first activation.
-    // Otherwise a newly received post may still be pending at that frame.
-    await AudienceAccess.instance.verifyPost(doc.id);
+    final data = doc.data() as Map<String, dynamic>? ?? {};
+    final audience = AudienceAccess.instance;
+
+    // A cold-start server read can be temporarily unverified. Never open a
+    // protected video until the current viewer has a confirmed access grant.
+    var allowed = await audience.verifyPost(doc.id);
+    for (var retry = 0;
+        !allowed && retry < 2 &&
+            audience.isPostPending(data, postId: doc.id);
+        retry++) {
+      await Future<void>.delayed(
+        Duration(milliseconds: retry == 0 ? 350 : 700),
+      );
+      if (FirebaseAuth.instance.currentUser?.uid != viewer) return;
+      allowed = await audience.verifyPost(doc.id);
+    }
     if (FirebaseAuth.instance.currentUser?.uid != viewer) return;
     final navigator = navigatorKey.currentState;
     if (navigator == null || !navigator.mounted) return;
-    final data = doc.data() as Map<String, dynamic>? ?? {};
+
+    // A terminated launch must have a real Home route underneath the video.
+    // Replacing the entire stack with PostViewScreen left Back with no target.
+    if (isFromTerminated) {
+      navigator.pushNamedAndRemoveUntil('/home', (route) => false);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!navigator.mounted ||
+          FirebaseAuth.instance.currentUser?.uid != viewer) return;
+    }
+
+    // If the server could not verify viewing rights, stay on Home rather
+    // than opening PostViewScreen's black pending/locked state.
+    if (!allowed ||
+        !audience.canViewPost(data, postId: doc.id) ||
+        data['isDeleted'] == true) return;
+
     final hls = (data['hlsPath'] ?? '').toString().trim();
     final url = hls.isNotEmpty ? hls : (data['videoUrl'] ?? '').toString().trim();
+    if (url.isEmpty || !audience.canPlayUrl(url)) return;
     final openComments = const ['comment', 'reply', 'comment_like'].contains(type);
     await BannerVideoNavigation.open(
       navigator: navigator,
       url: url,
-      replaceStack: isFromTerminated,
+      replaceStack: false,
       onPushed: () {},
       child: PostViewScreen(
         posts: [doc],

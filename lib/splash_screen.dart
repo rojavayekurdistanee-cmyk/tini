@@ -69,12 +69,12 @@ class _SplashScreenState extends State<SplashScreen> {
         } catch (e) {
           debugPrint("Splash preload error: $e");
         }
-        if (mounted) Navigator.pushReplacementNamed(context, '/home');
+        if (mounted && ModalRoute.of(context)?.isCurrent == true) Navigator.pushReplacementNamed(context, '/home');
       } else {
-        if (mounted) Navigator.pushReplacementNamed(context, '/nameSelection');
+        if (mounted && ModalRoute.of(context)?.isCurrent == true) Navigator.pushReplacementNamed(context, '/nameSelection');
       }
     } else {
-      if (mounted) Navigator.pushReplacementNamed(context, '/login');
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) Navigator.pushReplacementNamed(context, '/login');
     }
   }
 
