@@ -54,6 +54,7 @@ class PostViewScreen extends StatefulWidget {
   final bool isFeedActive;
   final bool isEmbeddedFeed;
   final bool isBannerNavigation;
+  final bool playbackManagedByNavigation;
 
   const PostViewScreen({
     super.key,
@@ -74,6 +75,7 @@ class PostViewScreen extends StatefulWidget {
     this.isFeedActive = true,
     this.isEmbeddedFeed = false,
     this.isBannerNavigation = false,
+    this.playbackManagedByNavigation = false,
   });
 
   @override
@@ -84,6 +86,8 @@ class _PostViewScreenState extends State<PostViewScreen> {
   late PreloadPageController _pageController;
   int _currentIndex = 0;
   ModalRoute<dynamic>? _playbackRoute;
+  bool get _navigationOwnsPlayback => widget.playbackManagedByNavigation ||
+      (widget.isBannerNavigation && widget.isFromTerminated);
   bool get _playbackVisible => mounted && widget.isFeedActive && (_playbackRoute?.isCurrent ?? true);
   late List<DocumentSnapshot> _stablePosts;
   bool _isCommentsOpen = false;
@@ -292,7 +296,7 @@ void initState() {
       } catch (_) {}
     }
 
-    // Cold notification playback is started once by the navigation handoff.
+    // Managed notification playback is started once by the navigation handoff.
     // هوم - شغل فوري بدون انتظار فريم
     if (!widget.isFromProfileGrid && widget.isFeedActive) {
       try {
@@ -302,7 +306,7 @@ void initState() {
           if (!_canViewPost(_stablePosts[_currentIndex])) {
             TitiSingleEngine().pause();
           } else if (url.isNotEmpty &&
-              !(widget.isBannerNavigation && widget.isFromTerminated)) {
+              !_navigationOwnsPlayback) {
             String? prevUrl, prevPrevUrl, nextUrl, nextNextUrl, nextNextNextUrl;
             if (_currentIndex > 0) prevUrl = _getBestUrl(_stablePosts[_currentIndex - 1]);
             if (_currentIndex > 1) prevPrevUrl = _getBestUrl(_stablePosts[_currentIndex - 2]);
@@ -829,7 +833,7 @@ void dispose() {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(_isCommentsOpen ? 10 : 0),
                         child: TitiVideoPlayer(
-                      playbackManagedExternally: widget.isBannerNavigation && widget.isFromTerminated,
+                      playbackManagedExternally: _navigationOwnsPlayback,
                       isFeedActive: widget.isFeedActive,
                       key: ValueKey("video_${postDoc.id}_${_currentIndex}"),
                       postDoc: postDoc,
