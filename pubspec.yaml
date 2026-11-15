@@ -37,7 +37,7 @@ dependencies:
   video_compress: ^3.1.4
   cached_network_image: ^3.4.1
   flutter_cache_manager: ^3.4.2
-  ffmpeg_kit_flutter_new: ^4.1.0
+  ffmpeg_kit_flutter_new: ^4.6.8
 
   # --- جمالية التطبيق والأنيميشن (UI & FX) ---
   lottie: ^3.1.2
