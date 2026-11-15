@@ -176,25 +176,31 @@ class BannerVideoNavigation {
     required VoidCallback onPushed,
     BannerVideoPlaybackDriver? playback,
     bool replaceStack = false,
+    Future<void> Function()? prepareColdStart,
   }) async {
-    final origin = VideoPlaybackRegistry.visibleOrigin;
+    VideoPlaybackOrigin? origin;
     final port = playback ?? _EnginePlaybackPort();
     final queue = port.operations;
     final viewer = port.viewer;
-    final bookmarks = port.captureBookmarks();
-    final original = origin == null
-        ? null
-        : port.capture(origin)?.withPlaying(true);
+    var bookmarks = port.captureBookmarks();
+    VideoPlaybackSnapshot? original;
     final handoff = VideoPlaybackHandoff(port, queue);
     final session = _BannerPlaybackSession(url, viewer, port, handoff);
+    // Reserve ownership before Home/Splash can finish their delayed startup.
+    session.starting = prepareColdStart != null;
     VideoPlaybackRegistry.add(session.lease);
     MaterialPageRoute<void>? route;
     try {
+      if (prepareColdStart != null) await prepareColdStart();
+      if (viewer == null || port.viewer != viewer || !navigator.mounted) return;
+      origin = VideoPlaybackRegistry.visibleOrigin;
+      bookmarks = port.captureBookmarks();
+      original = origin == null ? null : port.capture(origin)?.withPlaying(true);
       await queue.run(() async {
         await origin?.suspendExternal?.call();
         await port.silence();
       });
-      if (viewer == null || port.viewer != viewer || !navigator.mounted) return;
+      if (port.viewer != viewer || !navigator.mounted) return;
       route = MaterialPageRoute<void>(
         builder: (_) => _BannerPlaybackScope(session: session, child: child),
       );
@@ -222,6 +228,9 @@ class BannerVideoNavigation {
       final snapshot = identical(currentOrigin, origin)
           ? original
           : (currentOrigin == null ? null : port.capture(currentOrigin));
+      final returnSnapshot = prepareColdStart == null
+          ? snapshot
+          : snapshot?.withPlaying(true);
       bool canRestore() =>
           viewer != null &&
           port.viewer == viewer &&
@@ -232,7 +241,7 @@ class BannerVideoNavigation {
                   AppLifecycleState.resumed) &&
           (currentOrigin.engine == VideoPlaybackEngine.external ||
               port.canPlay(currentOrigin.url));
-      await handoff.restore(snapshot, canRestore);
+      await handoff.restore(returnSnapshot, canRestore);
       if (snapshot != null && canRestore()) {
         final resumedLease = VideoPlaybackRegistry.foregroundBanner;
         if (resumedLease?.url == snapshot.url) resumedLease?.onRestored?.call();
@@ -250,7 +259,7 @@ class _BannerPlaybackSession {
   _BannerPlaybackSession(this.url, this.viewer, this.port, this.handoff) {
     lease = VideoPlaybackLease(
       url,
-      () => visible && foreground && !closed && sameViewer,
+      () => (starting || visible) && foreground && !closed && sameViewer,
       onRestored: () => _suspended = false,
     );
   }
@@ -259,6 +268,7 @@ class _BannerPlaybackSession {
   final BannerVideoPlaybackDriver port;
   final VideoPlaybackHandoff handoff;
   late final VideoPlaybackLease lease;
+  bool starting = false;
   bool visible = false;
   bool foreground = true;
   bool closed = false;
@@ -334,6 +344,7 @@ class _BannerPlaybackScopeState extends State<_BannerPlaybackScope>
     final route = ModalRoute.of(context);
     final visible = route?.isCurrent == true;
     widget.session.visible = visible;
+    widget.session.starting = false;
     if (visible && !_wasVisible) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted &&

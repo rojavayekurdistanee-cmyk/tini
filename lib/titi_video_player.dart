@@ -29,6 +29,7 @@ class TitiVideoPlayer extends StatefulWidget {
   final VoidCallback onToggleComments;
   final VoidCallback onExitClearMode;
   final bool isFeedActive;
+  final bool playbackManagedExternally;
 
   const TitiVideoPlayer({
     super.key,
@@ -53,6 +54,7 @@ class TitiVideoPlayer extends StatefulWidget {
     required this.onToggleComments,
     required this.onExitClearMode,
     this.isFeedActive = true,
+    this.playbackManagedExternally = false,
   });
 
   @override
@@ -184,7 +186,7 @@ void _playHomeWithNeighbors() {
     final first = !_dependenciesReady;
     _dependenciesReady = true;
     final visible = _routeVisible;
-    if (visible && (first || !_wasRouteVisible) && widget.isFeedActive && widget.index == widget.currentIndex) {
+    if (!widget.playbackManagedExternally && visible && (first || !_wasRouteVisible) && widget.isFeedActive && widget.index == widget.currentIndex) {
       if (widget.isFromProfileGrid) {
         if (!TitiProfileEngine().isUserPaused) _playProfileWithNeighbors();
       } else {
@@ -220,7 +222,7 @@ void _playHomeWithNeighbors() {
     final bool indexChanged = oldWidget.index != widget.index ||
         oldWidget.isFromProfileGrid != widget.isFromProfileGrid;
 
-    if (isMeVisible && (becameActive || wasNotMeBefore || postChanged || indexChanged)) {
+    if (!widget.playbackManagedExternally && isMeVisible && (becameActive || wasNotMeBefore || postChanged || indexChanged)) {
       if (widget.isFromProfileGrid) {
         if (TitiProfileEngine().isUserPaused) return;
         _playProfileWithNeighbors();

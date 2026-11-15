@@ -80,12 +80,17 @@ class HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMi
       // فك قفل مباشر بعد النشر - ما بيلغي ميزة كتم الصوت
       try {
         await TitiSingleEngine().emergencyUnlock();
-        await TitiProfileEngine().unlock();
-        final String cur = TitiSingleEngine().currentUrl;
-        if (cur.isNotEmpty) {
-          await TitiSingleEngine().playUrl(cur);
-        } else {
-          await TitiSingleEngine().forceResumeForTab();
+        if (mounted && _isHomeFeedVisible) {
+          await TitiProfileEngine().unlock();
+          // A cold-start notification may cover Home while unlock awaits.
+          if (mounted && _isHomeFeedVisible) {
+            final String cur = TitiSingleEngine().currentUrl;
+            if (cur.isNotEmpty) {
+              await TitiSingleEngine().playUrl(cur);
+            } else {
+              await TitiSingleEngine().forceResumeForTab();
+            }
+          }
         }
       } catch (_) {}
       context.read<ChatProvider>().startFollowRequestsListener();

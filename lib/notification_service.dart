@@ -99,6 +99,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 }
 
 class NotificationService {
+  static bool _coldStartVideoClaimed = false;
   final _messaging = FirebaseMessaging.instance;
   final _localNotifications = FlutterLocalNotificationsPlugin();
 
@@ -529,15 +530,6 @@ class NotificationService {
     final navigator = navigatorKey.currentState;
     if (navigator == null || !navigator.mounted) return;
 
-    // A terminated launch must have a real Home route underneath the video.
-    // Replacing the entire stack with PostViewScreen left Back with no target.
-    if (isFromTerminated) {
-      navigator.pushNamedAndRemoveUntil('/home', (route) => false);
-      await WidgetsBinding.instance.endOfFrame;
-      if (!navigator.mounted ||
-          FirebaseAuth.instance.currentUser?.uid != viewer) return;
-    }
-
     // If the server could not verify viewing rights, stay on Home rather
     // than opening PostViewScreen's black pending/locked state.
     if (!allowed ||
@@ -548,10 +540,29 @@ class NotificationService {
     final url = hls.isNotEmpty ? hls : (data['videoUrl'] ?? '').toString().trim();
     if (url.isEmpty || !audience.canPlayUrl(url)) return;
     final openComments = const ['comment', 'reply', 'comment_like'].contains(type);
+    // FCM and the local launch callback can report the same cold launch.
+    if (isFromTerminated) {
+      if (_coldStartVideoClaimed) return;
+      _coldStartVideoClaimed = true;
+    }
     await BannerVideoNavigation.open(
       navigator: navigator,
       url: url,
       replaceStack: false,
+      prepareColdStart: isFromTerminated ? () async {
+        // Wait for Home to be installed and Splash to be disposed while the
+        // notification lease already prevents startup from selecting a video.
+        final home = MaterialPageRoute<void>(
+          settings: const RouteSettings(name: '/home'),
+          builder: (_) => const HomeScreen(),
+        );
+        navigator.pushAndRemoveUntil<void>(home, (route) => false);
+        await WidgetsBinding.instance.endOfFrame;
+        while (navigator.mounted && home.isActive &&
+            home.animation?.status != AnimationStatus.completed) {
+          await WidgetsBinding.instance.endOfFrame;
+        }
+      } : null,
       onPushed: () {},
       child: PostViewScreen(
         posts: [doc],
@@ -1140,4 +1151,3 @@ Future<String?> _createLetterAvatar(String name, int id) async {
     }
   }
 }
-
