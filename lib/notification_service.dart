@@ -684,6 +684,18 @@ class NotificationService {
       body = "لديك رسالة لمرة واحدة";
     }
 
+    // [Tini Fix] - لا تنشئ إشعاراً خارجياً فارغاً باسم Tini فقط.
+    // لا تغيّر مسار إشعارات الحفظ والمشاركة والتعليقات التي تحمل محتوى فعلياً.
+    final isEmptyTiniPlaceholder = title.trim() == 'Tini' &&
+        body.trim().isEmpty &&
+        avatarUrl.trim().isEmpty &&
+        postImageUrl.toString().trim().isEmpty;
+    if (isEmptyTiniPlaceholder) {
+      debugPrint('[Tini Push] Skipped empty background placeholder; '
+          'type=$backgroundType');
+      return;
+    }
+
     if (avatarUrl.isNotEmpty) {
       final avatarPath = await _createAvatarWithBadge(avatarUrl, DateTime.now().millisecond);
       if (avatarPath!= null) {
@@ -1099,3 +1111,4 @@ Future<String?> _createLetterAvatar(String name, int id) async {
     }
   }
 }
+
