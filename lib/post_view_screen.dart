@@ -55,6 +55,7 @@ class PostViewScreen extends StatefulWidget {
   final bool isEmbeddedFeed;
   final bool isBannerNavigation;
   final bool playbackManagedByNavigation;
+  final Future<void> Function()? onSearchExit;
 
   const PostViewScreen({
     super.key,
@@ -76,6 +77,7 @@ class PostViewScreen extends StatefulWidget {
     this.isEmbeddedFeed = false,
     this.isBannerNavigation = false,
     this.playbackManagedByNavigation = false,
+    this.onSearchExit,
   });
 
   @override
@@ -650,6 +652,11 @@ void dispose() {
   _audience.removeListener(_onAudienceChanged);
   _viewTimer?.cancel();
   _pageController.dispose();
+  if (widget.onSearchExit != null) {
+    unawaited(widget.onSearchExit!());
+    super.dispose();
+    return;
+  }
   // Retained feed pages share one engine. A replaced page must not lock the
   // engine already selected by its replacement; route/tab owners handle it.
   if (widget.isEmbeddedFeed || widget.isBannerNavigation) {
@@ -865,6 +872,7 @@ void dispose() {
                       child: Opacity(
                         opacity: _isCommentsOpen ? 0 : 1,
                         child: PostItemContent(
+                      tapToTogglePlayback: widget.onSearchExit != null,
                       isFeedActive: widget.isFeedActive,
                       key: ValueKey("post_${postDoc.id}"),
                       postDoc: postDoc,
@@ -990,7 +998,11 @@ void dispose() {
                 right: 60,
                 child: GestureDetector(
                   onTap: () {
-                    TitiSingleEngine().player.pause();
+                    if (widget.onSearchExit != null) {
+                      unawaited(widget.onSearchExit!());
+                    } else {
+                      TitiSingleEngine().player.pause();
+                    }
                     Navigator.pop(context);
                   },
                   child: Container(
@@ -1024,6 +1036,11 @@ void dispose() {
                   child: IconButton(
                     icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
                     onPressed: () {
+                      if (widget.onSearchExit != null) {
+                        unawaited(widget.onSearchExit!());
+                        Navigator.of(context).maybePop();
+                        return;
+                      }
                       if (widget.isBannerNavigation) {
                         Navigator.of(context).maybePop();
                         return;
@@ -1099,6 +1116,7 @@ class PostItemContent extends StatefulWidget {
   final bool isSinglePost;
   final Function(String) onRemovePost;
   final bool isFeedActive;
+  final bool tapToTogglePlayback;
 
   const PostItemContent({
     super.key,
@@ -1122,6 +1140,7 @@ class PostItemContent extends StatefulWidget {
     this.isSinglePost = false,
     required this.onRemovePost,
     this.isFeedActive = true,
+    this.tapToTogglePlayback = false,
   });
 
   @override
@@ -1906,10 +1925,19 @@ void _showPostOptionsMenu(BuildContext context, Map<String, dynamic> postData) {
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onTap: () {
-                setState(() {
-                  _showPlayButton = !_showPlayButton;
-                });
+              onTap: () async {
+                if (widget.tapToTogglePlayback) {
+                  if (!_canInteract) return;
+                  final engine = TitiSingleEngine();
+                  if (engine.player.state.playing) {
+                    await engine.pause();
+                  } else {
+                    await engine.play();
+                  }
+                  if (mounted) setState(() => _showPlayButton = true);
+                } else {
+                  setState(() => _showPlayButton = !_showPlayButton);
+                }
               },
             ),
           ),
@@ -2100,7 +2128,11 @@ onPressed: () async {
     if (widget.isFromProfileGrid) {
       await TitiProfileEngine().pause();
     } else {
-      await player.pause();
+      if (widget.tapToTogglePlayback) {
+        await TitiSingleEngine().pause();
+      } else {
+        await player.pause();
+      }
     }
   } else {
     if (widget.isFromProfileGrid) {
@@ -2354,6 +2386,7 @@ onPressed: () async {
     );
     if (!mounted) return;
     if (wentToProfile == true) return; // راح عالبروفايل الموسع لا تشغل شي
+    if (widget.tapToTogglePlayback && ModalRoute.of(context)?.isCurrent != true) return;
     await TitiSingleEngine().unlockForHome();
   },
                             child: StreamBuilder<QuerySnapshot>(
