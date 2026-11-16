@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'titi_single_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'search_provider.dart';
@@ -11,6 +13,42 @@ import 'story_ring.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'audience_access.dart';
 import 'audience_gate.dart';
+
+// Search video routes stop on every pop path and restore only a silent bookmark.
+class SearchPlaybackNavigation {
+  static Future<void> open({
+    required NavigatorState navigator,
+    required Widget Function(Future<void> Function() stop) buildVideo,
+    required Future<void> Function() prepare,
+    required Future<void> Function() stop,
+    required VoidCallback restoreBookmark,
+    required bool Function() valid,
+    required bool Function() returnedToSearch,
+  }) async {
+    Future<void>? stopped;
+    Future<void> stopOnce() => stopped ??= stop();
+    MaterialPageRoute<void>? route;
+    try {
+      await prepare();
+      if (!valid() || !navigator.mounted) return;
+      route = MaterialPageRoute<void>(builder: (_) => PopScope<void>(
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) unawaited(stopOnce());
+        },
+        child: buildVideo(stopOnce),
+      ));
+      await navigator.push<void>(route);
+      await stopOnce();
+      await route.completed;
+    } finally {
+      // Even a failed preparation must leave the search screens silent.
+      if (valid() && returnedToSearch()) {
+        await stopOnce();
+        restoreBookmark();
+      }
+    }
+  }
+}
 
 class SearchResultsScreen extends StatefulWidget {
   final String initialQuery;
@@ -32,6 +70,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
   final Color fieldFill = const Color(0xFF1C1C1E);
   final Color highlight = const Color(0xFFFF3B30);
 
+  bool _openingSearchVideo = false;
   String _activeFilter = 'الكل'; // [جديد]
 
   @override
@@ -59,6 +98,45 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _openVideoFeed({
+    required List<DocumentSnapshot> posts,
+    required int initialIndex,
+    required String query,
+    String? thumbnail,
+  }) async {
+    if (!mounted || _openingSearchVideo || posts.isEmpty) return;
+    _openingSearchVideo = true;
+    final viewer = FirebaseAuth.instance.currentUser?.uid;
+    final navigator = Navigator.of(context);
+    final searchRoute = ModalRoute.of(context);
+    final engine = TitiSingleEngine();
+    final bookmark = engine.currentUrl;
+    try {
+      await SearchPlaybackNavigation.open(
+        navigator: navigator,
+        prepare: engine.unlockForNavigation,
+        stop: () async {
+          if (viewer == FirebaseAuth.instance.currentUser?.uid) await engine.lock();
+        },
+        restoreBookmark: () => engine.restoreNavigationBookmark(bookmark),
+        valid: () => mounted && viewer == FirebaseAuth.instance.currentUser?.uid,
+        returnedToSearch: () => searchRoute?.isCurrent == true,
+        buildVideo: (stop) => PostViewScreen(
+          posts: posts, initialIndex: initialIndex, thumbnailUrl: thumbnail,
+          showSearchBar: true, searchQuery: query, onSearchExit: stop,
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر تشغيل الفيديو. حاول مجدداً.')),
+        );
+      }
+    } finally {
+      _openingSearchVideo = false;
+    }
   }
 
   // [جديد] فتح فيديو من نتائج البحث
@@ -102,18 +180,10 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
         return;
       }
 
-      // 5. افتح PostViewScreen
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PostViewScreen(
-            posts: validDocs,
-            initialIndex: selectedIndex,
-            thumbnailUrl: validDocs[selectedIndex].data()?['thumbnailUrl'],
-            showSearchBar: true, // [جديد]
-            searchQuery: provider.currentQuery, // [جديد]
-          ),
-        ),
+      await _openVideoFeed(
+        posts: validDocs, initialIndex: selectedIndex,
+        thumbnail: validDocs[selectedIndex].data()?['thumbnailUrl'],
+        query: provider.currentQuery,
       );
     } catch (e) {
       if (!mounted) return;
@@ -174,7 +244,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('لا توجد فيديوهات لهذا الصوت'), backgroundColor: Colors.orange));
         return;
       }
-      Navigator.push(context, MaterialPageRoute(builder: (_) => PostViewScreen(posts: filtered, initialIndex: 0, showSearchBar: true, searchQuery: soundTitle)));
+      await _openVideoFeed(posts: filtered, initialIndex: 0, query: soundTitle);
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
@@ -221,7 +291,7 @@ class _SearchResultsScreenState extends State<SearchResultsScreen>
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('لا توجد فيديوهات لهذا الهاشتاق'), backgroundColor: Colors.orange));
         return;
       }
-      Navigator.push(context, MaterialPageRoute(builder: (_) => PostViewScreen(posts: filtered, initialIndex: 0, showSearchBar: true, searchQuery: '#$tagName')));
+      await _openVideoFeed(posts: filtered, initialIndex: 0, query: '#$tagName');
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
