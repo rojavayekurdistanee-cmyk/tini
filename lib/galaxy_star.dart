@@ -13,6 +13,8 @@ class GalaxyStar {
   final double depth;
   final double twinkleSpeed;
   final double phase;
+  final bool hasRays;
+  final bool hasDiagonalRays;
 
   const GalaxyStar({
     required this.id,
@@ -23,6 +25,8 @@ class GalaxyStar {
     required this.depth,
     required this.twinkleSpeed,
     required this.phase,
+    this.hasRays = false,
+    this.hasDiagonalRays = false,
   });
 
   static const worldSize = Size(2400, 2400);
@@ -45,12 +49,18 @@ class GalaxyStar {
             random.nextDouble() * worldSize.width,
             random.nextDouble() * worldSize.height,
           ),
-          radius: 0.6 + random.nextDouble() * 2,
+          radius: id % 19 == 0
+              ? 1.8 + random.nextDouble() * 0.8
+              : 0.45 + random.nextDouble() * 1.25,
           color: colors[random.nextInt(colors.length)],
-          brightness: 0.35 + random.nextDouble() * 0.65,
+          brightness: id % 19 == 0
+              ? 0.9 + random.nextDouble() * 0.1
+              : 0.5 + random.nextDouble() * 0.4,
           depth: 0.25 + random.nextDouble() * 0.75,
           twinkleSpeed: 1.0 + random.nextInt(3),
           phase: random.nextDouble() * math.pi * 2,
+          hasRays: id % 19 == 0,
+          hasDiagonalRays: id % 57 == 0,
         ),
       ),
     );
