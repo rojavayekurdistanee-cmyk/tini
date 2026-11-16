@@ -17,7 +17,7 @@ import 'messages_tab.dart';
 import 'chat_provider.dart';
 import 'search_screen.dart';
 import 'stories_bar.dart';
-import 'secret_vault_screen.dart';
+import 'community_hub_screen.dart';
 import 'titi_profile_engine.dart';
 import 'auth_provider.dart' as custom;
 
@@ -235,7 +235,7 @@ onBackToHome: () {
   });
 },
                     ),
-                    const SecretVaultScreen(),
+                    const CommunityHubScreen(),
                   ],
                 ),
                 Positioned(
@@ -496,7 +496,7 @@ onTap: () async {
               },
               child: Container(width: 45, height: 28, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.cyan, width: 2)), child: const Icon(Icons.add, color: Colors.black, size: 20)),
             ),
-            _bottomNavItem(Icons.inventory_2, "السر", 3), 
+            _bottomNavItem(Icons.hub_outlined, "الملتقى", 3),
             _bottomNavItem(Icons.person_outline, "ملفي", 2),
           ],
         ),
@@ -535,13 +535,70 @@ Widget _bottomNavItem(IconData icon, String label, int index, {Color? specialCol
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: itemColor, size: 24),
+          if (index == 3)
+            const _CommunityHubIcon()
+          else
+            Icon(icon, color: itemColor, size: 24),
           const SizedBox(height: 4),
           Text(label, style: TextStyle(color: itemColor, fontSize: 10, fontWeight: specialColor != null ? FontWeight.bold : FontWeight.normal)),
         ],
       ),
     );
   }
+}
+
+// Keep the navigation slot at 24px; animate only the hub icon.
+class _CommunityHubIcon extends StatefulWidget {
+  const _CommunityHubIcon();
+
+  @override
+  State<_CommunityHubIcon> createState() => _CommunityHubIconState();
+}
+
+class _CommunityHubIconState extends State<_CommunityHubIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulseController;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1300),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 24,
+    height: 24,
+    child: AnimatedBuilder(
+      animation: _pulseController,
+      builder: (context, child) => Transform.scale(
+        scale: 0.95 + _pulseController.value * 0.10,
+        child: child,
+      ),
+      child: ShaderMask(
+        blendMode: BlendMode.srcIn,
+        shaderCallback: (bounds) => const LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: [
+            Color(0xFF009688),
+            Color(0xFFFF1744),
+            Color(0xFFFFEB3B),
+          ],
+        ).createShader(bounds),
+        child: const Icon(Icons.hub_outlined, color: Colors.white, size: 24),
+      ),
+    ),
+  );
 }
 
 class _TabWithStories extends StatefulWidget {

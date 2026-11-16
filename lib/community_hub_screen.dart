@@ -4,8 +4,8 @@ import 'app_colors.dart';
 import 'crown_provider.dart';
 import 'tini_throne_fullscreen.dart';
 
-class SecretVaultScreen extends StatelessWidget {
-  const SecretVaultScreen({super.key});
+class CommunityHubScreen extends StatelessWidget {
+  const CommunityHubScreen({super.key});
 
   @override
   Widget build(BuildContext context) => ChangeNotifierProvider(
