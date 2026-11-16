@@ -59,35 +59,95 @@ class GalaxyStarfieldPainter extends CustomPainter {
       final point =
           center + (star.position - camera) * (zoom * parallax) + drift;
       final radius = star.radius * zoom * (0.6 + star.depth * 0.4);
-      if (point.dx < -15 ||
-          point.dy < -15 ||
-          point.dx > size.width + 15 ||
-          point.dy > size.height + 15) {
+      final extent = radius * (star.hasRays ? 10 : 4);
+      if (point.dx < -extent ||
+          point.dy < -extent ||
+          point.dx > size.width + extent ||
+          point.dy > size.height + extent) {
         continue;
       }
+      // Gentle 8–24 second cycles, each with its own phase.
       final twinkle =
-          0.7 + 0.3 * math.sin(time * star.twinkleSpeed + star.phase);
+          0.86 + 0.14 * math.sin(time * star.twinkleSpeed + star.phase);
       final alpha = (star.brightness * twinkle).clamp(0.0, 1.0);
-      if (star.radius > 2) {
+      if (star.hasRays || star.radius > 1.1) {
+        final haloRadius = radius * (star.hasRays ? 7 : 3.5);
         canvas.drawCircle(
           point,
-          radius * 4,
+          haloRadius,
           Paint()
             ..shader = RadialGradient(
               colors: [
-                star.color.withValues(alpha: alpha * 0.22),
+                star.color.withValues(
+                  alpha: alpha * (star.hasRays ? 0.4 : 0.18),
+                ),
                 star.color.withValues(alpha: 0),
               ],
-            ).createShader(Rect.fromCircle(center: point, radius: radius * 4)),
+            ).createShader(Rect.fromCircle(center: point, radius: haloRadius)),
         );
       }
+      if (star.hasRays) {
+        final length = radius * (7 + twinkle * 2);
+        _drawRay(canvas, point, Offset(length, 0), alpha * 0.85, zoom);
+        _drawRay(canvas, point, Offset(0, length * 1.2), alpha * 0.85, zoom);
+        if (star.hasDiagonalRays) {
+          _drawRay(
+            canvas,
+            point,
+            Offset(length * 0.45, length * 0.45),
+            alpha * 0.3,
+            zoom,
+          );
+          _drawRay(
+            canvas,
+            point,
+            Offset(length * 0.45, -length * 0.45),
+            alpha * 0.3,
+            zoom,
+          );
+        }
+      }
+      // The colored halo surrounds a white photographic point of light.
       canvas.drawCircle(
         point,
         radius,
-        paint..color = star.color.withValues(alpha: alpha),
+        paint
+          ..color = Colors.white.withValues(
+            alpha: star.hasRays ? 0.95 + 0.05 * twinkle : alpha,
+          ),
       );
+      if (star.hasRays) {
+        canvas.drawCircle(point, radius * 0.5, paint..color = Colors.white);
+      }
     }
     canvas.restore();
+  }
+
+  void _drawRay(
+    Canvas canvas,
+    Offset center,
+    Offset vector,
+    double alpha,
+    double zoom,
+  ) {
+    final start = center - vector;
+    final end = center + vector;
+    canvas.drawLine(
+      start,
+      end,
+      Paint()
+        ..strokeWidth = (0.6 * zoom).clamp(0.5, 1.2)
+        ..shader = LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0),
+            Colors.white.withValues(alpha: alpha),
+            Colors.white.withValues(alpha: 0),
+          ],
+          begin: Alignment(-vector.dx.sign, -vector.dy.sign),
+          end: Alignment(vector.dx.sign, vector.dy.sign),
+          stops: const [0, 0.5, 1],
+        ).createShader(Rect.fromPoints(start, end).inflate(0.01)),
+    );
   }
 
   @override
