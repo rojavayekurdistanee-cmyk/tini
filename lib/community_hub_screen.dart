@@ -35,32 +35,44 @@ class _CommunityHubSectionsState extends State<_CommunityHubSections> {
   bool _galaxyOpened = false;
 
   @override
-  Widget build(BuildContext context) => Column(
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
     children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(
-          textDirection: TextDirection.rtl,
-          children: [
-            _sectionButton(0, 'العرش', Icons.workspace_premium_outlined),
-            const SizedBox(width: 12),
-            _sectionButton(1, 'المجرة', Icons.auto_awesome_outlined),
-          ],
-        ),
-      ),
-      Expanded(
-        child: IndexedStack(
-          index: _section,
-          children: [
-            TickerMode(
+      IndexedStack(
+        index: _section,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 60),
+            child: TickerMode(
               enabled: _section == 0,
               child: const TiniThroneFullScreen(),
             ),
-            if (_galaxyOpened)
-              GalaxyScreen(active: _section == 1)
-            else
-              const SizedBox.expand(),
-          ],
+          ),
+          if (_galaxyOpened)
+            GalaxyScreen(active: _section == 1)
+          else
+            const SizedBox.expand(),
+        ],
+      ),
+      Positioned(
+        top: 0,
+        left: 0,
+        right: 0,
+        child: Padding(
+          padding: EdgeInsetsDirectional.only(
+            start: 16,
+            end: _section == 1 ? 72 : 16,
+            top: 8,
+            bottom: 8,
+          ),
+          child: Row(
+            textDirection: TextDirection.rtl,
+            children: [
+              _sectionButton(0, 'العرش', Icons.workspace_premium_outlined),
+              const SizedBox(width: 12),
+              _sectionButton(1, 'المجرة', Icons.auto_awesome_outlined),
+            ],
+          ),
         ),
       ),
     ],
@@ -85,7 +97,7 @@ class _CommunityHubSectionsState extends State<_CommunityHubSections> {
                 : Colors.white60,
             backgroundColor: selected
                 ? const Color(0xFF163A40)
-                : Colors.transparent,
+                : const Color(0xA60F1720),
             minimumSize: const Size(0, 44),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),

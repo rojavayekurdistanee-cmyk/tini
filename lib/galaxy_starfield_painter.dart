@@ -21,6 +21,9 @@ class GalaxyStarfieldPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // CustomPainter does not clip automatically: keep the sky below the tabs.
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
     canvas.drawColor(const Color(0xFF0F1720), BlendMode.src);
     final center = size.center(Offset.zero);
     // Fixed gradients are inexpensive soft nebulae, without image assets or blur.
@@ -84,6 +87,7 @@ class GalaxyStarfieldPainter extends CustomPainter {
         paint..color = star.color.withValues(alpha: alpha),
       );
     }
+    canvas.restore();
   }
 
   @override
