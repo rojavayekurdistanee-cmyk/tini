@@ -52,15 +52,13 @@ service cloud.firestore {
         && request.resource.data.get('badge', null) == null
         && request.resource.data.get('badgeEndsAt', null) == null
         && !request.resource.data.keys().hasAny(['walletVersion', 'purchaseAccountToken', 'walletDebt',
-          'boxReservedPoints',
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
 allow update: if request.auth != null && request.auth.uid == userId
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'tiniBalance', 'walletVersion', 'purchaseAccountToken', 'walletDebt', 'boxReservedPoints', 'badge', 'badgeEndsAt',
+          'tiniBalance', 'walletVersion', 'purchaseAccountToken', 'walletDebt', 'badge', 'badgeEndsAt',
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
       allow delete: if request.auth!= null && request.auth.uid == userId
         && resource.data.get('throneReservedPoints', 0) == 0
-        && resource.data.get('boxReservedPoints', 0) == 0
         && resource.data.get('walletDebt', 0) == 0
         && resource.data.get('tiniBalance', 0) == 0
         && (!exists(/databases/$(database)/documents/throne_wallets/$(userId))
@@ -474,40 +472,22 @@ match /sharedPosts/{postId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    function noBoxMoneyOnCreate() {
-      return request.resource.data.get('boxOwnedByUid', null) == null
-        && request.resource.data.get('boxReservedAt', null) == null
-        && request.resource.data.get('boxExpiresAt', null) == null
-        && request.resource.data.get('boxSold', false) == false
-        && request.resource.data.get('boxSoldAt', null) == null
-        && request.resource.data.get('boxOpenedAt', null) == null
-        && request.resource.data.get('boxSecureHash', null) == null;
-    }
-    function boxMoneySafe() {
-      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-        'boxOwnedByUid', 'boxOwnedByName', 'boxReservedAt', 'boxExpiresAt',
-        'boxSold', 'boxSoldAt', 'boxOpenedAt', 'boxSecureHash'])
-        && (resource.data.get('boxOwnedByUid', null) == null ||
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'boxPrice', 'boxRarity', 'uid', 'isMysteryBox', 'isDeleted']));
-    }
     // الفيديوهات أو المنشورات (تحديث نهائي لدعم المحذوفات + الأمان)
     match /posts/{postId} {
       // القراءة: الكل بيقرا إلا المحذوف - المحذوف بس صاحبه بيقدر يقراه
       allow read: if resource == null || resource.data.get('isDeleted', false) != true || (request.auth != null && resource.data.uid == request.auth.uid);
 
       // الإنشاء: بس صاحب الفيديو
-      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid && noBoxMoneyOnCreate();
+      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
 
       // التحديث: صاحب الفيديو بيقدر يعدل كلشي (نقل للمحذوفات / استعادة) + أي حدا بيقدر يعدل العدادات فقط
-      allow update: if request.auth != null && boxMoneySafe() && (
+      allow update: if request.auth != null && (
         resource.data.uid == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'views', 'comments', 'shares', 'favoritesCount', 'isDeleted', 'deletedAt', 'expireAt'])
       );
 
       // الحذف النهائي: بس صاحب الفيديو
-      allow delete: if request.auth != null && resource.data.uid == request.auth.uid
-        && (resource.data.get('boxOwnedByUid', null) == null || resource.data.get('boxSold', false) == true);
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
 
       // [Tini - Owner Reactions Overlay] - فهرس الإعجابات لكل فيديو.
       // صاحب الفيديو يرى الأسماء والأعداد فوق الفيديو، وصاحب الإعجاب يرى تسجيله فقط.
@@ -649,12 +629,6 @@ allow delete: if request.auth != null && resource.data.toUid == request.auth.uid
       allow read: if request.auth != null && request.auth.uid == uid;
       allow write: if false;
     }
-    // ⭐ [Titi Star: بحر الصناديق] - السماح بقراءة الصناديق للجميع
-    match /mystery_boxes/{docId} {
-      allow read: if true;
-      allow write: if request.auth!= null;
-    }
-
     // ⭐ [Titi Star: الرائج الجديد - الصقه هون]
     match /trendingFeed/{docId} {
       allow read: if true;

@@ -55,7 +55,6 @@ class PostViewScreen extends StatefulWidget {
   final bool isEmbeddedFeed;
   final bool isBannerNavigation;
   final bool playbackManagedByNavigation;
-  final Future<void> Function()? onSearchExit;
 
   const PostViewScreen({
     super.key,
@@ -77,7 +76,6 @@ class PostViewScreen extends StatefulWidget {
     this.isEmbeddedFeed = false,
     this.isBannerNavigation = false,
     this.playbackManagedByNavigation = false,
-    this.onSearchExit,
   });
 
   @override
@@ -652,11 +650,6 @@ void dispose() {
   _audience.removeListener(_onAudienceChanged);
   _viewTimer?.cancel();
   _pageController.dispose();
-  if (widget.onSearchExit != null) {
-    unawaited(widget.onSearchExit!());
-    super.dispose();
-    return;
-  }
   // Retained feed pages share one engine. A replaced page must not lock the
   // engine already selected by its replacement; route/tab owners handle it.
   if (widget.isEmbeddedFeed || widget.isBannerNavigation) {
@@ -872,7 +865,6 @@ void dispose() {
                       child: Opacity(
                         opacity: _isCommentsOpen ? 0 : 1,
                         child: PostItemContent(
-                      tapToTogglePlayback: widget.onSearchExit != null,
                       isFeedActive: widget.isFeedActive,
                       key: ValueKey("post_${postDoc.id}"),
                       postDoc: postDoc,
@@ -998,11 +990,7 @@ void dispose() {
                 right: 60,
                 child: GestureDetector(
                   onTap: () {
-                    if (widget.onSearchExit != null) {
-                      unawaited(widget.onSearchExit!());
-                    } else {
-                      TitiSingleEngine().player.pause();
-                    }
+                    TitiSingleEngine().player.pause();
                     Navigator.pop(context);
                   },
                   child: Container(
@@ -1036,11 +1024,6 @@ void dispose() {
                   child: IconButton(
                     icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
                     onPressed: () {
-                      if (widget.onSearchExit != null) {
-                        unawaited(widget.onSearchExit!());
-                        Navigator.of(context).maybePop();
-                        return;
-                      }
                       if (widget.isBannerNavigation) {
                         Navigator.of(context).maybePop();
                         return;
@@ -1116,7 +1099,6 @@ class PostItemContent extends StatefulWidget {
   final bool isSinglePost;
   final Function(String) onRemovePost;
   final bool isFeedActive;
-  final bool tapToTogglePlayback;
 
   const PostItemContent({
     super.key,
@@ -1140,7 +1122,6 @@ class PostItemContent extends StatefulWidget {
     this.isSinglePost = false,
     required this.onRemovePost,
     this.isFeedActive = true,
-    this.tapToTogglePlayback = false,
   });
 
   @override
@@ -1509,7 +1490,6 @@ class _PostItemContentState extends State<PostItemContent>
   @override
   void initState() {
     super.initState();
-    _markBoxAsOpenedIfNeeded();
     _audioController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 5),
@@ -1522,19 +1502,7 @@ class _PostItemContentState extends State<PostItemContent>
     super.dispose();
   }
 
-  void _markBoxAsOpenedIfNeeded() {
-    if (!_canInteract || widget.index != widget.currentIndex) return;
-    final postData = widget.postDoc.data() as Map<String, dynamic>;
-    final bool isMysteryBox = postData['isMysteryBox']?? false;
-    if (!isMysteryBox) return;
-    final String? boxOwnedByUid = postData['boxOwnedByUid'];
-    final String currentUid = widget.auth.uid;
-    if (boxOwnedByUid!= currentUid) return;
-    final dynamic boxOpenedAt = postData['boxOpenedAt'];
-    if (boxOpenedAt!= null) return;
-    debugPrint("📦 [Titi Box]: أول فتح للصندوق ${widget.postDoc.id}");
-    widget.postProvider.markBoxAsOpened(widget.postDoc.id);
-  }
+
 
   void _toggleComments(bool show) {
     setState(() {
@@ -1925,19 +1893,10 @@ void _showPostOptionsMenu(BuildContext context, Map<String, dynamic> postData) {
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
-              onTap: () async {
-                if (widget.tapToTogglePlayback) {
-                  if (!_canInteract) return;
-                  final engine = TitiSingleEngine();
-                  if (engine.player.state.playing) {
-                    await engine.pause();
-                  } else {
-                    await engine.play();
-                  }
-                  if (mounted) setState(() => _showPlayButton = true);
-                } else {
-                  setState(() => _showPlayButton = !_showPlayButton);
-                }
+              onTap: () {
+                setState(() {
+                  _showPlayButton = !_showPlayButton;
+                });
               },
             ),
           ),
@@ -2128,11 +2087,7 @@ onPressed: () async {
     if (widget.isFromProfileGrid) {
       await TitiProfileEngine().pause();
     } else {
-      if (widget.tapToTogglePlayback) {
-        await TitiSingleEngine().pause();
-      } else {
-        await player.pause();
-      }
+      await player.pause();
     }
   } else {
     if (widget.isFromProfileGrid) {
@@ -2386,7 +2341,6 @@ onPressed: () async {
     );
     if (!mounted) return;
     if (wentToProfile == true) return; // راح عالبروفايل الموسع لا تشغل شي
-    if (widget.tapToTogglePlayback && ModalRoute.of(context)?.isCurrent != true) return;
     await TitiSingleEngine().unlockForHome();
   },
                             child: StreamBuilder<QuerySnapshot>(

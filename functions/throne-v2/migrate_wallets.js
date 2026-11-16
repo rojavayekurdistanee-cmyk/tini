@@ -18,13 +18,11 @@ async function inspect(db) {
   const legacy = await db.collection('throne_wallets').get();
   const state = (await db.doc('throne_data/current').get()).data() ?? null;
   const cfg = (await db.doc('wallet_config/runtime').get()).data();
-  const posts = await db.collection('posts').where('isMysteryBox', '==', true).get();
-  const activeBoxes = posts.docs.filter(d => d.data().boxOwnedByUid && !d.data().boxSold).map(d => d.id);
   const wallets = new Map(legacy.docs.map(d => [d.id, d.data()]));
   const ids = new Set(users.docs.map(d => d.id));
   const orphans = [...wallets.keys()].filter(uid => !ids.has(uid));
   return {version: 2, runId: cfg?.migrationRunId ?? null, stateDigest: digest(state),
-    activeBoxes, orphans, accounts: users.docs.map(d => ({uid: d.id,
+    orphans, accounts: users.docs.map(d => ({uid: d.id,
       expectedDigest: digest({user: d.data(), legacy: wallets.get(d.id) ?? null}),
       oldWalletBalance: d.data().tiniBalance ?? 0,
       oldThroneWallet: wallets.get(d.id) ?? null,
@@ -49,8 +47,8 @@ async function apply(db, plan) {
     return {alreadyApplied: true};
   }
   const report = await inspect(db);
-  if (report.orphans.length || report.activeBoxes.length || report.stateDigest !== plan.stateDigest)
-    throw Error('Resolve old box reservations/orphan wallets or regenerate the state snapshot first');
+  if (report.orphans.length || report.stateDigest !== plan.stateDigest)
+    throw Error('Resolve orphan wallets or regenerate the state snapshot first');
   const unique = new Set(plan.accounts.map(a => a.uid));
   if (unique.size !== plan.accounts.length || report.accounts.some(a => !unique.has(a.uid))) throw Error('Manifest must include every account once');
   for (const a of plan.accounts) {
@@ -74,7 +72,7 @@ async function apply(db, plan) {
       const reserved = state?.status === 'auction' && state.leaderUid === a.uid ? whole(state.currentBid) : 0;
       if ((old?.reservedPoints ?? 0) !== reserved) throw Error('Legacy escrow does not match current auction');
       tx.update(userRef, {walletVersion: 2, tiniBalance: a.available, throneReservedPoints: reserved,
-        boxReservedPoints: 0, walletDebt: 0, purchaseAccountToken: randomUUID()});
+        walletDebt: 0, purchaseAccountToken: randomUUID()});
       if (old) tx.update(legacyRef, {availablePoints: 0, reservedPoints: 0, migratedToWalletVersion: 2, migrationRunId: plan.runId});
       tx.create(marker, {reviewed, userBefore: user, legacyBefore: old, available: a.available,
         reserved, classification: a.classification, reason: a.reason, migratedAt: Timestamp.now()});

@@ -413,7 +413,7 @@ Future<Map<String, dynamic>> getUserBadge(String uid) async {
     }
   }
 
-  // [تعديل Tini V30.3]: دالة الرفع المحدثة لدعم صمامات الأمان والخصوصية والموقع ومنطق الديو + بحر الصناديق
+  // [تعديل Tini V30.3]: دالة الرفع المحدثة لدعم صمامات الأمان والخصوصية والموقع ومنطق الديو
 Future<String?> uploadPost({
     required BuildContext context,
     required String videoPath,
@@ -423,7 +423,6 @@ Future<String?> uploadPost({
     required double videoWidth,
     required double videoHeight,
     required String description,
-    required String boxTitle,
     required String fullName,
     required String username,
     required String profileImg,
@@ -451,10 +450,6 @@ Future<String?> uploadPost({
     bool isDuet = false,
     String? duetFrom,
     String? duetOriginalOwnerId, // <-- جديد مشان المستقبل
-    // [Tini V30.3]: معاملات بحر الصناديق
-    bool isMysteryBox = false,
-    int boxPrice = 0,
-    String? boxRarity, // ← ضيف هذا السطر الجديد
   }) async {
     if (uid.isEmpty || videoPath.isEmpty) return null;
 
@@ -472,15 +467,7 @@ Future<String?> uploadPost({
     if (!descriptionCheck.allowed) {
       throw Exception("المحتوى غير مسموح");
     }
-    if (boxTitle.isNotEmpty) {
-      final boxCheck = await ModerationService.checkTextDetailed(boxTitle);
-      if (boxCheck.isUnavailable) {
-        throw StateError('تعذّر فحص عنوان الصندوق قبل الرفع. حاول مجدداً.');
-      }
-      if (!boxCheck.allowed) {
-        throw Exception("عنوان الصندوق غير مسموح");
-      }
-    }
+
 
     _isUploading = true;
     _uploadProgress = 0.05;
@@ -569,7 +556,7 @@ Future<String?> uploadPost({
         'thumbnailUrl': thumbUrl,
         'description': description,
         'description_lowercase': description.toLowerCase(),
-        'boxTitle': boxTitle, // جديد: العنوان التسويقي للصندوق
+
         "hashtags": hashtags?? [],
         'hashtags_lowercase': (hashtags?? []).map((h) => h.toLowerCase()).toList(),
         'mentions': verifiedMentions,
@@ -605,18 +592,6 @@ Future<String?> uploadPost({
         'isDuet': isDuet,
         'duetFrom': duetFrom?? '',
         'duetOriginalOwnerId': duetOriginalOwnerId?? '', // <-- جديد مشان المستقبل
-        // [Tini V30.3]: حقول بحر الصناديق
-        'isMysteryBox': isMysteryBox,
-        'boxPrice': boxPrice,
-        'boxRarity': boxRarity, // ← ضيف هذا السطر
-        'boxOwnedByUid': null,
-        'boxOwnedByName': null,
-        'boxReservedAt': null,
-        'boxExpiresAt': null, // ← جديد
-        'boxSoldAt': null,
-        'boxSold': false,
-        'boxSecureHash': null,
-        'boxOpenedAt': null, // ← جديد: لازم يكون null عند الإنشاء
       }, SetOptions(merge: true)); // الالتزام بقاعدة الإضافة فقط عبر Merge
 
       debugPrint("📝 [Titi System]: تم حجز مستند المنشور بالمعرف المتطابق: $videoFileName");
@@ -689,43 +664,6 @@ Future<String?> uploadPost({
       notifyListeners();
     }
   }
-
-  // [Tini]: تسجيل وقت فتح الصندوق لأول مرة
-Future<void> markBoxAsOpened(String postId) async {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) return;
-
-  final postRef = _firestore.collection('posts').doc(postId);
-  
-  try {
-    await _firestore.runTransaction((transaction) async {
-      final freshDoc = await transaction.get(postRef);
-      if (!freshDoc.exists) throw Exception('الصندوق غير موجود');
-      
-      final data = freshDoc.data() as Map<String, dynamic>;
-      
-      // الشروط الثلاثة: صندوق + انا المشتري + لسه ما انفتح
-      final isMysteryBox = data['isMysteryBox'] ?? false;
-      final ownedByUid = data['boxOwnedByUid'];
-      final boxOpenedAt = data['boxOpenedAt'];
-      
-      if (!isMysteryBox) return; // مش صندوق
-      if (ownedByUid != user.uid) return; // مش انا المشتري
-      if (boxOpenedAt != null) return; // انفتح قبل
-      
-      // نسجل وقت الفتح بسيرفر Firestore
-      transaction.update(postRef, {
-        'boxOpenedAt': FieldValue.serverTimestamp(),
-      });
-      
-      debugPrint("📦 [Titi Box]: تم تسجيل فتح الصندوق $postId");
-    });
-  } catch (e) {
-    debugPrint("❌ [Titi Box Error]: فشل تسجيل فتح الصندوق: $e");
-  }
-}
-
-  
 
   Stream<QuerySnapshot> getLikedPostsIdsStream(String userId) {
     if (userId.isEmpty) return const Stream.empty();

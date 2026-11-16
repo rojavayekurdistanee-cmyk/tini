@@ -10,7 +10,7 @@ function whole(n) {
 }
 function wallet(data) {
   if (data?.walletVersion !== 2) fail('failed-precondition', 'المحفظة بانتظار التهيئة الآمنة');
-  whole(data.tiniBalance); whole(data.throneReservedPoints); whole(data.boxReservedPoints);
+  whole(data.tiniBalance); whole(data.throneReservedPoints);
   whole(data.walletDebt ?? 0);
   return data;
 }
@@ -52,7 +52,7 @@ async function create(db, uid) {
     if (old.exists || (data.tiniBalance ?? 0) !== 0 || (data.throneReservedPoints ?? 0) !== 0)
       fail('failed-precondition', 'الحساب القديم يحتاج إلى أداة الانتقال');
     tx.update(ref, {walletVersion: 2, tiniBalance: 0, throneReservedPoints: 0,
-      boxReservedPoints: 0, walletDebt: 0, purchaseAccountToken: accountToken});
+      walletDebt: 0, purchaseAccountToken: accountToken});
     return {balance: 0, accountToken};
   });
 }
