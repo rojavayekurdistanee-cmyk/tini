@@ -1668,3 +1668,5 @@ exports.cleanupExpiredViewOnce = onSchedule({
 
 // Public allowlisted profiles; full users documents remain owner-only.
 Object.assign(exports, require('./public_profiles'));
+// Optional skill exchange; isolated from existing galaxy and throne systems.
+Object.assign(exports, require('./galaxy_matching'));

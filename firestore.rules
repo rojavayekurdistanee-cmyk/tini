@@ -33,6 +33,20 @@ service cloud.firestore {
       allow write: if request.auth!= null;
     }
 
+    // Missing-star matching: only sanitized owner inboxes/preferences are readable.
+    // Every sensitive write and all internal matching data remain server-only.
+    match /galaxy_match_preferences/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+    match /galaxy_match_inbox/{uid}/galaxy_match_items/{item} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+    match /galaxy_match_index/{item} { allow read, write: if false; }
+    match /galaxy_match_previews/{item} { allow read, write: if false; }
+    match /galaxy_match_invites/{item} { allow read, write: if false; }
+
     // Only the server may publish the explicitly allowlisted profile fields.
     match /public_profiles/{userId} {
       allow read: if true;
