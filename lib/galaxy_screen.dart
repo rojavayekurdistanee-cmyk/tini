@@ -8,13 +8,21 @@ import 'galaxy_user_star.dart';
 import 'galaxy_user_stars_layer.dart';
 import 'galaxy_user_card.dart';
 import 'galaxy_match_entry_sheet.dart';
+import 'galaxy_match_provider.dart';
+import 'galaxy_match_service.dart';
 import 'profile_screen.dart';
 import 'galaxy_starfield_painter.dart';
 
 class GalaxyScreen extends StatefulWidget {
   final bool active;
   final GalaxyDiscoveryBackend? discoveryBackend;
-  const GalaxyScreen({super.key, this.active = true, this.discoveryBackend});
+  final GalaxyMatchBackend? matchBackend;
+  const GalaxyScreen({
+    super.key,
+    this.active = true,
+    this.discoveryBackend,
+    this.matchBackend,
+  });
 
   @override
   State<GalaxyScreen> createState() => _GalaxyScreenState();
@@ -25,6 +33,7 @@ class _GalaxyScreenState extends State<GalaxyScreen>
   late final AnimationController _clock;
   late final List<GalaxyStar> _stars;
   late final GalaxyDiscoveryProvider _discovery;
+  late final GalaxyMatchProvider _matchBadge;
   bool _cardOpen = false;
   final _visibilityKey = UniqueKey();
   Offset _camera = GalaxyStar.worldSize.center(Offset.zero);
@@ -49,6 +58,10 @@ class _GalaxyScreenState extends State<GalaxyScreen>
     );
     _discovery = GalaxyDiscoveryProvider(
       widget.discoveryBackend ?? GalaxyDiscoveryService(),
+    );
+    _matchBadge = GalaxyMatchProvider(
+      widget.matchBackend ?? GalaxyMatchService(),
+      badgeOnly: true,
     );
   }
 
@@ -98,6 +111,7 @@ class _GalaxyScreenState extends State<GalaxyScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _matchBadge.dispose();
     _discovery.dispose();
     _clock.dispose();
     super.dispose();
@@ -105,7 +119,7 @@ class _GalaxyScreenState extends State<GalaxyScreen>
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _discovery,
+    animation: Listenable.merge([_discovery, _matchBadge]),
     builder: (context, _) => _buildGalaxy(context),
   );
 
@@ -209,13 +223,20 @@ class _GalaxyScreenState extends State<GalaxyScreen>
                 child: IconButton.filledTonal(
                   padding: EdgeInsets.zero,
                   iconSize: 18,
-                  tooltip: 'النجمة الناقصة',
+                  tooltip: _matchBadge.hasIncomingRequests
+                      ? 'النجمة الناقصة، لديك طلبات توافق واردة'
+                      : 'النجمة الناقصة',
                   style: IconButton.styleFrom(
                     backgroundColor: const Color(0xCC163A40),
                     foregroundColor: const Color(0xFF80CBC4),
                   ),
                   onPressed: _openMatching,
-                  icon: const Icon(Icons.extension_outlined),
+                  icon: Badge(
+                    isLabelVisible: _matchBadge.hasIncomingRequests,
+                    smallSize: 7,
+                    backgroundColor: Colors.redAccent,
+                    child: const Icon(Icons.extension_outlined),
+                  ),
                 ),
               ),
             PositionedDirectional(
@@ -293,7 +314,10 @@ class _GalaxyScreenState extends State<GalaxyScreen>
         context: context,
         backgroundColor: const Color(0xFF1A222C),
         isScrollControlled: true,
-        builder: (_) => const GalaxyMatchEntrySheet(),
+        builder: (_) => GalaxyMatchEntrySheet(
+          backend: widget.matchBackend,
+          badgeProvider: _matchBadge,
+        ),
       );
     } finally {
       if (mounted) {

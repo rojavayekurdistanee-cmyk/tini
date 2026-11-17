@@ -7,7 +7,8 @@ import 'galaxy_match_inbox_screen.dart';
 
 class GalaxyMatchEntrySheet extends StatefulWidget {
   final GalaxyMatchBackend? backend;
-  const GalaxyMatchEntrySheet({super.key, this.backend});
+  final GalaxyMatchProvider? badgeProvider;
+  const GalaxyMatchEntrySheet({super.key, this.backend, this.badgeProvider});
   @override
   State<GalaxyMatchEntrySheet> createState() => _GalaxyMatchEntrySheetState();
 }
@@ -50,7 +51,7 @@ class _GalaxyMatchEntrySheetState extends State<GalaxyMatchEntrySheet> {
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _provider,
+    animation: Listenable.merge([_provider, ?widget.badgeProvider]),
     builder: (context, _) => SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -94,7 +95,21 @@ class _GalaxyMatchEntrySheetState extends State<GalaxyMatchEntrySheet> {
               onTap: _provider.ready ? _discover : null,
             ),
             ListTile(
-              leading: const Icon(Icons.inbox_outlined, color: Colors.teal),
+              leading: Badge(
+                isLabelVisible:
+                    widget.badgeProvider?.hasIncomingRequests ??
+                    _provider.hasIncomingRequests,
+                backgroundColor: Colors.redAccent,
+                child: const Icon(Icons.inbox_outlined, color: Colors.teal),
+              ),
+              subtitle:
+                  (widget.badgeProvider?.hasIncomingRequests ??
+                      _provider.hasIncomingRequests)
+                  ? const Text(
+                      'لديك طلبات واردة بانتظار الرد',
+                      style: TextStyle(color: Colors.white60),
+                    )
+                  : null,
               title: const Text(
                 'توافقاتي',
                 style: TextStyle(color: Colors.white),

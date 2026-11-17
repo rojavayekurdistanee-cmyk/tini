@@ -13,7 +13,13 @@ abstract class GalaxyMatchBackend {
   Future<Map<String, dynamic>> call(String name, Map<String, dynamic> data);
 }
 
-class GalaxyMatchService implements GalaxyMatchBackend {
+/// Lightweight presence query; the badge never needs identities or a count.
+abstract class GalaxyMatchIncomingBackend {
+  Stream<DateTime?> incomingDeadline(String uid, DateTime after);
+}
+
+class GalaxyMatchService
+    implements GalaxyMatchBackend, GalaxyMatchIncomingBackend {
   final FirebaseFirestore store;
   final FirebaseAuth auth;
   final FirebaseFunctions functions;
@@ -51,6 +57,23 @@ class GalaxyMatchService implements GalaxyMatchBackend {
             .map((d) => GalaxyMatchInvite.fromMap(d.id, d.data()))
             .toList(),
       );
+  @override
+  Stream<DateTime?> incomingDeadline(String uid, DateTime after) => store
+      .collection('galaxy_match_inbox')
+      .doc(uid)
+      .collection('galaxy_match_items')
+      .where('direction', isEqualTo: 'received')
+      .where('status', isEqualTo: 'pending')
+      .where('expiresAt', isGreaterThan: Timestamp.fromDate(after))
+      .orderBy('expiresAt')
+      .limit(1)
+      .snapshots()
+      .map(
+        (snapshot) => snapshot.docs.isEmpty
+            ? null
+            : matchDate(snapshot.docs.first.data()['expiresAt']),
+      );
+
   @override
   Future<List<GalaxyMatchInvite>> older(
     String uid,

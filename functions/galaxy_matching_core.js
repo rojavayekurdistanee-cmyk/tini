@@ -1,5 +1,6 @@
 'use strict';
 const {createHash, randomBytes} = require('node:crypto');
+const {isDeepStrictEqual} = require('node:util');
 const {Timestamp} = require('firebase-admin/firestore');
 const {HttpsError} = require('firebase-functions/v2/https');
 
@@ -293,8 +294,27 @@ function createMatching(db, {clock = Date.now} = {}) {
           const deletedOrBlocked = !pair.ua || !pair.ub || pair.blocked || ageUnsafe;
           const invalidPending = invite.status === 'pending' && (!pair.available ||
             pair.pa?.version !== invite.senderVersion || pair.pb?.version !== invite.recipientVersion);
-          if (deletedOrBlocked || invalidPending) writeInvite(tx, db, doc.ref,
-            terminal(invite, invite.status === 'accepted' ? 'ended' : 'cancelled', now), now);
+          if (deletedOrBlocked || invalidPending) {
+            writeInvite(tx, db, doc.ref,
+              terminal(invite, invite.status === 'accepted' ? 'ended' : 'cancelled', now), now);
+          } else if (invite.status === 'accepted') {
+            // Read current source identities inside the same transaction as the
+            // consent/block checks. Delayed events cannot restore stale data.
+            const entries = await tx.getAll(
+              inboxRef(db, invite.sender, invite.publicId),
+              inboxRef(db, invite.recipient, invite.publicId));
+            const peers = [identity(invite.recipient, pair.ub), identity(invite.sender, pair.ua)];
+            for (let i = 0; i < entries.length; i++) {
+              const item = entries[i].data();
+              // Never recreate a removed record or reveal identity in an
+              // anonymous/closed inbox item, even if stored data is inconsistent.
+              if (item?.status === 'accepted' && !isDeepStrictEqual(item.peer, peers[i])) {
+                // Promote a changed item into the live inbox page, including
+                // matches previously loaded through pagination.
+                tx.update(entries[i].ref, {peer: peers[i], updatedAt: at(now)});
+              }
+            }
+          }
         });
       }
       cursor = page.docs.at(-1);
