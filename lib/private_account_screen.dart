@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'auth_provider.dart' as custom;
 import 'package:iconsax/iconsax.dart';
@@ -99,6 +101,7 @@ body: ListView(
           ),
 
           
+          const _GalaxyPrivacySetting(),
           _buildSectionHeader("إعدادات التحكم"),
           _buildActivityGroup([
             _buildActivityTile(
@@ -257,6 +260,55 @@ body: ListView(
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
       ),
+    );
+  }
+}
+
+class _GalaxyPrivacySetting extends StatefulWidget {
+  const _GalaxyPrivacySetting();
+  @override
+  State<_GalaxyPrivacySetting> createState() => _GalaxyPrivacySettingState();
+}
+
+class _GalaxyPrivacySettingState extends State<_GalaxyPrivacySetting> {
+  bool _saving = false;
+  @override
+  Widget build(BuildContext context) {
+    final uid = context.watch<custom.AuthProvider>().uid;
+    if (uid.isEmpty) return const SizedBox.shrink();
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      key: ValueKey(uid),
+      stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data();
+        return Container(
+          margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          decoration: BoxDecoration(color: const Color(0xFF1A222C), borderRadius: BorderRadius.circular(18)),
+          child: SwitchListTile(
+            title: const Text('إظهار حسابي في المجرة', style: TextStyle(color: Colors.white, fontSize: 15)),
+            subtitle: Text(data?['isPrivate'] == true
+              ? 'الحساب الخاص لا يظهر في المجرة. يُحفظ اختيارك للحساب العام.'
+              : 'اسمح للآخرين باكتشاف نجمتك داخل مجرة Tini',
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            value: data?['showInGalaxy'] != false,
+            activeTrackColor: Colors.teal,
+            onChanged: data == null || snapshot.hasError || _saving ? null : (value) async {
+              setState(() => _saving = true);
+              try {
+                if (FirebaseAuth.instance.currentUser?.uid != uid) return;
+                await FirebaseFirestore.instance.collection('users').doc(uid).update({'showInGalaxy': value});
+              } catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('تعذّر حفظ الإعداد. أعد المحاولة.')));
+                }
+              } finally {
+                if (mounted) setState(() => _saving = false);
+              }
+            },
+          ),
+        );
+      },
     );
   }
 }

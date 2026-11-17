@@ -2,6 +2,7 @@
 const {getFirestore} = require('firebase-admin/firestore');
 const {onDocumentWritten} = require('firebase-functions/v2/firestore');
 const {onCall, HttpsError} = require('firebase-functions/v2/https');
+const {createHash} = require('node:crypto');
 const {isDeepStrictEqual} = require('node:util');
 
 // Explicit allowlist: new account fields are PRIVATE unless deliberately added.
@@ -30,6 +31,13 @@ function projectProfile(uid, account) {
       if (Object.hasOwn(account, field)) profile[field] = account[field];
     }
   }
+  // Derived fields are never copied from the client account.
+  profile.galaxyEligible = account.profileCompleted === true &&
+    typeof account.username === 'string' && account.username.trim().length > 0 &&
+    typeof account.fullName === 'string' && account.fullName.trim().length > 0 &&
+    account.isPrivate !== true && account.showInGalaxy !== false;
+  profile.galaxyRank = createHash('sha256').update(`tini-galaxy:${uid}`)
+    .digest().readUInt32BE(0) / 0x100000000;
   return profile;
 }
 async function syncProfile(db, uid) {
