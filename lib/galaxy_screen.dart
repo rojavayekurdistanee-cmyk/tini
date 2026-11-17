@@ -164,8 +164,11 @@ class _GalaxyScreenState extends State<GalaxyScreen>
                   layoutBuilder: (current, previous) =>
                       current ?? const SizedBox.expand(),
                   child: GalaxyUserStarsLayer(
-                    key: ValueKey(_discovery.stars.map((s) => s.uid).join(',')),
+                    key: ValueKey(
+                      '${_discovery.ownStar?.uid ?? ''}:${_discovery.stars.map((s) => s.uid).join(',')}',
+                    ),
                     stars: _discovery.stars,
+                    ownStar: _discovery.ownStar,
                     camera: _camera,
                     zoom: _zoom,
                     clock: _clock,
@@ -238,6 +241,23 @@ class _GalaxyScreenState extends State<GalaxyScreen>
     ),
   );
   Future<void> _openStar(GalaxyUserStar star) async {
+    if (!_cardOpen && _discovery.ownStar?.uid == star.uid) {
+      _cardOpen = true;
+      _syncAnimation();
+      try {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => ProfileScreen(userId: star.uid),
+          ),
+        );
+      } finally {
+        if (mounted) {
+          _cardOpen = false;
+          _syncAnimation();
+        }
+      }
+      return;
+    }
     if (_cardOpen || !_discovery.stars.any((s) => s.uid == star.uid)) return;
     _cardOpen = true;
     _syncAnimation();

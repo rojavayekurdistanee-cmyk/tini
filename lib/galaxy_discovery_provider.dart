@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:ui' show Offset;
+import 'galaxy_star.dart';
 import 'package:flutter/foundation.dart';
 import 'audience_policy.dart';
 import 'galaxy_discovery_selector.dart';
@@ -50,6 +52,23 @@ class GalaxyDiscoveryProvider extends ChangeNotifier {
                 ),
               ),
         );
+
+  /// The owner's private document is already observed for audience checks.
+  /// Self visibility is independent of eligibility, blocks and discovery slots.
+  GalaxyUserStar? get ownStar {
+    final uid = _uid;
+    if (_disposed ||
+        !_viewerReady ||
+        uid == null ||
+        uid != backend.currentUid) {
+      return null;
+    }
+    return GalaxyUserStar.fromProfile(
+      uid,
+      _viewer,
+      GalaxyStar.worldSize.center(Offset.zero),
+    );
+  }
 
   bool _allowed(String id, {Map<String, dynamic>? profile}) {
     final data = profile ?? _profiles[id];
