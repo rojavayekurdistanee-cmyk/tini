@@ -4,6 +4,7 @@ import 'galaxy_user_star.dart';
 
 class GalaxyUserStarsLayer extends StatelessWidget {
   final List<GalaxyUserStar> stars;
+  final GalaxyUserStar? ownStar;
   final Offset camera;
   final double zoom;
   final Animation<double> clock;
@@ -12,6 +13,7 @@ class GalaxyUserStarsLayer extends StatelessWidget {
   const GalaxyUserStarsLayer({
     super.key,
     required this.stars,
+    this.ownStar,
     required this.camera,
     required this.zoom,
     required this.clock,
@@ -55,11 +57,12 @@ class GalaxyUserStarsLayer extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final size = constraints.biggest;
+      final displayedStars = [...stars, ?ownStar];
       return GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTapUp: (details) {
           final star = hitTest(
-            stars,
+            displayedStars,
             details.localPosition,
             size,
             camera,
@@ -70,7 +73,8 @@ class GalaxyUserStarsLayer extends StatelessWidget {
         child: RepaintBoundary(
           child: CustomPaint(
             painter: _UserStarsPainter(
-              stars,
+              displayedStars,
+              ownStar?.uid,
               camera,
               zoom,
               clock,
@@ -78,7 +82,29 @@ class GalaxyUserStarsLayer extends StatelessWidget {
             ),
             child: Stack(
               children: [
-                for (final star in stars)
+                if (ownStar != null &&
+                    inExplorableArea(
+                      screenPosition(ownStar!, size, camera, zoom),
+                      size,
+                    ))
+                  Positioned(
+                    left: screenPosition(ownStar!, size, camera, zoom).dx - 48,
+                    top: screenPosition(ownStar!, size, camera, zoom).dy + 18,
+                    width: 96,
+                    child: const IgnorePointer(
+                      child: Text(
+                        'نجمتك',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF80CBC4),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          shadows: [Shadow(color: Colors.black, blurRadius: 6)],
+                        ),
+                      ),
+                    ),
+                  ),
+                for (final star in displayedStars)
                   if (star.visible &&
                       inExplorableArea(
                         screenPosition(star, size, camera, zoom),
@@ -91,7 +117,9 @@ class GalaxyUserStarsLayer extends StatelessWidget {
                       height: 48,
                       child: Semantics(
                         button: true,
-                        label: 'نجمة ${star.fullName}',
+                        label: star.uid == ownStar?.uid
+                            ? 'نجمتك، ${star.fullName}'
+                            : 'نجمة ${star.fullName}',
                         onTap: () => onTap(star),
                         child: const SizedBox.expand(),
                       ),
@@ -107,12 +135,14 @@ class GalaxyUserStarsLayer extends StatelessWidget {
 
 class _UserStarsPainter extends CustomPainter {
   final List<GalaxyUserStar> stars;
+  final String? ownUid;
   final Offset camera;
   final double zoom;
   final Animation<double> clock;
   final bool reduceMotion;
   _UserStarsPainter(
     this.stars,
+    this.ownUid,
     this.camera,
     this.zoom,
     this.clock,
@@ -130,7 +160,10 @@ class _UserStarsPainter extends CustomPainter {
         camera,
         zoom,
       );
-      final radius = (2.7 * zoom).clamp(2.0, 6.0);
+      final isOwn = star.uid == ownUid;
+      final radius = isOwn
+          ? (3.6 * zoom).clamp(2.8, 8.0)
+          : (2.7 * zoom).clamp(2.0, 6.0);
       if (!GalaxyUserStarsLayer.inExplorableArea(point, size)) continue;
       final phase = star.uid.codeUnits.fold(0, (a, b) => a + b) % 100;
       final light = reduceMotion
@@ -142,7 +175,9 @@ class _UserStarsPainter extends CustomPainter {
         Paint()
           ..shader = RadialGradient(
             colors: [
-              const Color(0xFF80CBC4).withValues(alpha: 0.5 * light),
+              Color(
+                isOwn ? 0xFF00BFA5 : 0xFF80CBC4,
+              ).withValues(alpha: (isOwn ? 0.7 : 0.5) * light),
               Colors.transparent,
             ],
           ).createShader(Rect.fromCircle(center: point, radius: radius * 8)),
@@ -159,7 +194,9 @@ class _UserStarsPainter extends CustomPainter {
                   end: Alignment(vector.dx.sign, vector.dy.sign),
                   colors: [
                     Colors.transparent,
-                    Colors.white.withValues(alpha: light),
+                    Color(
+                      isOwn ? 0xFF80CBC4 : 0xFFFFFFFF,
+                    ).withValues(alpha: light),
                     Colors.transparent,
                   ],
                   stops: const [0, 0.5, 1],
@@ -181,6 +218,7 @@ class _UserStarsPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _UserStarsPainter old) =>
       old.stars != stars ||
+      old.ownUid != ownUid ||
       old.camera != camera ||
       old.zoom != zoom ||
       old.reduceMotion != reduceMotion;
