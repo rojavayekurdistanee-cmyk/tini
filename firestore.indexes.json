@@ -466,7 +466,90 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "galaxy_match_index",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "eligible",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "offer",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "need",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "band",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "rank",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "galaxy_match_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "expiresAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "galaxy_match_invites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "members",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "galaxy_match_previews",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "galaxy_match_invites",
+      "fieldPath": "purgeAt",
+      "ttl": true,
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "galaxy_match_items",
+      "fieldPath": "purgeAt",
+      "ttl": true,
+      "indexes": []
+    }
+  ]
 }
