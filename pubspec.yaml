@@ -22,7 +22,7 @@ dependencies:
 
   # --- محرك التشغيل والدخول (Firebase & Auth) ---
   firebase_core: ^4.11.0
-  firebase_auth: ^6.5.4
+  firebase_auth: ^6.7.1
   cloud_firestore: ^6.6.0
   google_sign_in: ^5.4.4
   shared_preferences: ^2.5.5
