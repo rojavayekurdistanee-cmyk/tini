@@ -32,7 +32,7 @@ function projectProfile(uid, account) {
     }
   }
   // Derived fields are never copied from the client account.
-  profile.galaxyEligible = account.profileCompleted === true &&
+  profile.galaxyEligible =
     typeof account.username === 'string' && account.username.trim().length > 0 &&
     typeof account.fullName === 'string' && account.fullName.trim().length > 0 &&
     account.isPrivate !== true && account.showInGalaxy !== false;
