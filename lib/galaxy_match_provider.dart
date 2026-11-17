@@ -6,6 +6,12 @@ import 'galaxy_match_service.dart';
 
 class GalaxyMatchProvider extends ChangeNotifier {
   final GalaxyMatchBackend backend;
+  final bool badgeOnly;
+  final DateTime Function() _now;
+  StreamSubscription<DateTime?>? _incomingSub;
+  Timer? _incomingTimer;
+  DateTime? _incomingExpiresAt;
+  int _incomingVersion = 0;
   StreamSubscription<String?>? _identity;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   String? _uid;
@@ -20,7 +26,11 @@ class GalaxyMatchProvider extends ChangeNotifier {
   Set<String> _liveIds = {};
   bool _blocksReady = false, _reverseReady = false;
 
-  GalaxyMatchProvider(this.backend) {
+  GalaxyMatchProvider(
+    this.backend, {
+    this.badgeOnly = false,
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now {
     _setUser(backend.currentUid);
     _identity = backend.identityChanges.listen(
       _setUser,
@@ -51,6 +61,73 @@ class GalaxyMatchProvider extends ChangeNotifier {
     return List.unmodifiable(list);
   }
 
+  bool get hasIncomingRequests {
+    if (!signedIn) return false;
+    if (badgeOnly) return _incomingExpiresAt?.isAfter(_now()) == true;
+    return items.any(
+      (item) =>
+          item.direction == 'received' &&
+          item.status == GalaxyMatchStatus.pending &&
+          item.expiresAt.isAfter(_now()),
+    );
+  }
+
+  void _watchIncoming(String uid, int session) {
+    _incomingTimer?.cancel();
+    unawaited(_incomingSub?.cancel());
+    final version = ++_incomingVersion;
+    final source = backend;
+    final Stream<DateTime?> stream;
+    if (source is GalaxyMatchIncomingBackend) {
+      stream = (source as GalaxyMatchIncomingBackend).incomingDeadline(
+        uid,
+        _now(),
+      );
+    } else {
+      // Keep injectable legacy backends compatible; production uses limit(1).
+      stream = backend.inbox(uid).map((items) {
+        final deadlines =
+            items
+                .where(
+                  (item) =>
+                      item.direction == 'received' &&
+                      item.status == GalaxyMatchStatus.pending &&
+                      item.expiresAt.isAfter(_now()),
+                )
+                .map((item) => item.expiresAt)
+                .toList()
+              ..sort();
+        return deadlines.isEmpty ? null : deadlines.first;
+      });
+    }
+    _incomingSub = stream.listen(
+      (deadline) {
+        if (!_valid(session) || version != _incomingVersion) return;
+        _incomingTimer?.cancel();
+        _incomingExpiresAt = deadline;
+        if (deadline != null) {
+          final remaining = deadline.difference(_now());
+          _incomingTimer = Timer(
+            remaining.isNegative ? Duration.zero : remaining,
+            () {
+              if (!_valid(session) || version != _incomingVersion) return;
+              _incomingExpiresAt = null;
+              _emit();
+              _watchIncoming(uid, session);
+            },
+          );
+        }
+        _emit();
+      },
+      onError: (Object error) {
+        if (!_valid(session) || version != _incomingVersion) return;
+        _incomingTimer?.cancel();
+        _incomingExpiresAt = null;
+        _emit();
+      },
+    );
+  }
+
   static int _compare(GalaxyMatchInvite a, GalaxyMatchInvite b) {
     final order = b.updatedAt.compareTo(a.updatedAt);
     return order == 0 ? b.id.compareTo(a.id) : order;
@@ -63,8 +140,16 @@ class GalaxyMatchProvider extends ChangeNotifier {
   bool _valid(int session) =>
       !_disposed && session == _session && _uid == backend.currentUid;
   void _setUser(String? uid) {
-    if (_disposed || (_uid == uid && _subscriptions.isNotEmpty)) return;
+    if (_disposed ||
+        (_uid == uid && (_subscriptions.isNotEmpty || _incomingSub != null))) {
+      return;
+    }
     _session++;
+    _incomingVersion++;
+    _incomingTimer?.cancel();
+    unawaited(_incomingSub?.cancel());
+    _incomingSub = null;
+    _incomingExpiresAt = null;
     for (final sub in _subscriptions) {
       unawaited(sub.cancel());
     }
@@ -81,7 +166,9 @@ class GalaxyMatchProvider extends ChangeNotifier {
     ready = false;
     error = null;
     hasMore = false;
-    if (uid != null) {
+    if (uid != null && badgeOnly) {
+      _watchIncoming(uid, _session);
+    } else if (uid != null) {
       final session = _session;
       void failed(Object e) {
         if (_valid(session)) {
@@ -229,6 +316,8 @@ class GalaxyMatchProvider extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _session++;
+    _incomingTimer?.cancel();
+    unawaited(_incomingSub?.cancel());
     unawaited(_identity?.cancel());
     for (final sub in _subscriptions) {
       unawaited(sub.cancel());
