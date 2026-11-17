@@ -18,7 +18,7 @@ exports.discoverGalaxyMatches = callable('discover');
 exports.requestGalaxyMatch = callable('request');
 exports.respondGalaxyMatch = callable('respond');
 exports.manageGalaxyMatch = callable('manage');
-const relevant = ['fullName', 'username', 'isPrivate', 'showInGalaxy', 'birthDate', 'dob',
+const relevant = ['fullName', 'username', 'profileImg', 'isPrivate', 'showInGalaxy', 'birthDate', 'dob',
   'audience_18plus', 'isAdultContent', 'ownerIsAdultContent', 'ownerAudience18Plus', 'blockedUsers', 'blocked'];
 exports.syncGalaxyMatchEligibility = onDocumentWritten({region, document: 'users/{uid}', retry: true, timeoutSeconds: 300, maxInstances: 10}, async event => {
   const before = event.data?.before.data(), after = event.data?.after.data();
