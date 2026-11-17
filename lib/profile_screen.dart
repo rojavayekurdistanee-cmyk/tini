@@ -1323,14 +1323,15 @@ if (!isOwnProfile)
           ),
         ),
       ),
-    if (!isOwn)
+    if (!isOwn && currentUid.isNotEmpty && viewedUid.isNotEmpty)
       Positioned(
         bottom: 0,
         right: 0,
         child: StreamBuilder<DocumentSnapshot>(
+          key: ValueKey('profile_follow_${currentUid}_$viewedUid'),
           stream: FirebaseFirestore.instance
          .collection('users')
-         .doc(FirebaseAuth.instance.currentUser?.uid?? '')
+         .doc(currentUid)
          .collection('following')
          .doc(viewedUid)
          .snapshots(),
@@ -1338,6 +1339,7 @@ if (!isOwnProfile)
             final bool isFollowing = snapshot.hasData && snapshot.data!.exists;
             return GestureDetector(
               onTap: () {
+                if (FirebaseAuth.instance.currentUser?.uid != currentUid) return;
                 Provider.of<custom.AuthProvider>(context, listen: false).toggleFollow(viewedUid);
               },
               child: Container(
