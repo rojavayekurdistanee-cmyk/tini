@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'r2_service.dart';
+import 'dart:convert';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /*
   [Tini Project Rules]:
   1. File Name: close_account_screen.dart
   2. UI Style: Matched with your colors (0xFF1A222C Surface, 0xFF0F1720 BG).
-  3. Logic: Full Data Wipe (Auth + Firestore + Storage).
+  3. Logic: Server-managed closure with retryable profile cleanup.
 */
 
 class CloseAccountScreen extends StatefulWidget {
@@ -26,38 +28,70 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
   final Color titiTeal = Colors.teal;
   final Color errorRed = const Color(0xFFE53935);
 
+  Future<void> _removeClosedAccountFromDevice(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    final accounts = List<String>.from(prefs.getStringList('saved_accounts') ?? []);
+    accounts.remove(uid);
+    await prefs.setStringList('saved_accounts', accounts);
+    for (final key in ['account_type_$uid', 'acc_${uid}_email',
+      'acc_${uid}_fullName', 'acc_${uid}_username', 'acc_${uid}_profileImg']) {
+      await prefs.remove(key);
+    }
+    if (prefs.getString('last_uid') == uid) await prefs.remove('last_uid');
+    const storage = FlutterSecureStorage(aOptions: AndroidOptions(
+      storageCipherAlgorithm: StorageCipherAlgorithm.AES_GCM_NoPadding,
+      resetOnError: true,
+      storageNamespace: 'TitiStar_V5_FinalSafe',
+      preferencesKeyPrefix: 'titi_star_v5',
+    ));
+    for (final key in ['auth_type_$uid', 'auth_pass_$uid', 'auth_phone_$uid']) {
+      await storage.delete(key: key);
+    }
+    // Local-only cleanup: disableForUid also writes users/{uid}, which must
+    // never be recreated after closure. Preserve all other saved passkeys.
+    final raw = await storage.read(key: 'titi_passkey_list');
+    final oldUid = await storage.read(key: 'titi_passkey_uid');
+    final accountsWithPasskeys = raw == null
+        ? <String>[?oldUid]
+        : (jsonDecode(raw) as List).cast<String>();
+    accountsWithPasskeys.remove(uid);
+    await storage.write(key: 'titi_passkey_list', value: jsonEncode(accountsWithPasskeys));
+    if (oldUid == uid) await storage.delete(key: 'titi_passkey_uid');
+  }
+
   Future<void> _permanentlyDeleteAccount() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || _isLoading) return;
     setState(() => _isLoading = true);
-    final User? user = FirebaseAuth.instance.currentUser;
-    final String? uid = user?.uid;
-
-    if (uid == null) return;
-
+    var accepted = false;
     try {
-            // 1. حذف الصورة من R2
-      try {
-        final r2 = R2Service();
-        await r2.deleteByUrl('profile_images/$uid.jpg');
-        await r2.deleteByUrl('profile_images/$uid');
-      } catch (e) {
-        debugPrint("R2 delete error: $e");
+      final result = await FirebaseFunctions.instanceFor(region: 'europe-west1')
+          .httpsCallable('requestAccountDeletion')
+          .call(<String, dynamic>{'uid': uid});
+      if (result.data is! Map || result.data['accepted'] != true) {
+        throw StateError('Account closure was not accepted');
       }
-
-      // 2. حذف مستند المستخدم من Firestore (مجموعة users)
-      await FirebaseFirestore.instance.collection('users').doc(uid).delete();
-
-      // 3. حذف الحساب من Firebase Authentication
-      await user?.delete();
-
-      if (mounted) {
-        // العودة لشاشة تسجيل الدخول بعد الحذف
+      accepted = true;
+      // A response for an old session must not sign out a newly switched user.
+      if (FirebaseAuth.instance.currentUser?.uid == uid) {
+        // AuthProvider's existing authStateChanges listener clears the session
+        // and activity service. Do not await another account's offline writes.
+        await FirebaseAuth.instance.signOut();
+      }
+      await _removeClosedAccountFromDevice(uid);
+      if (mounted && FirebaseAuth.instance.currentUser == null) {
         Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
       }
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'requires-recent-login') {
-        _showErrorSnackBar("للأمان، يرجى إعادة تسجيل الدخول قبل حذف الحساب.");
-      } else {
-        _showErrorSnackBar("حدث خطأ: ${e.message}");
+    } on FirebaseFunctionsException catch (e) {
+      if (mounted) _showErrorSnackBar(e.message ?? 'تعذر إرسال طلب الإغلاق. حاول مجدداً.');
+    } catch (_) {
+      if (mounted) {
+        _showErrorSnackBar(accepted
+            ? 'تم قبول إغلاق الحساب. تعذر تنظيف بعض بياناته المحفوظة على هذا الجهاز.'
+            : 'تعذر تأكيد طلب الإغلاق. تحقق من الاتصال وحاول مجدداً.');
+        if (accepted && FirebaseAuth.instance.currentUser == null) {
+          Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+        }
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -80,7 +114,7 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         content: const Text(
-          "هل أنت متأكد؟ سيتم حذف كافة بياناتك وصورك نهائياً ولا يمكن التراجع.",
+          "هل أنت متأكد؟ سيُغلق حسابك نهائياً ويبدأ تنظيف بيانات ملفك الشخصي في الخلفية. لا يمكن التراجع بعد قبول الطلب.",
           textAlign: TextAlign.center,
           style: TextStyle(color: Colors.white70, fontSize: 14),
         ),
@@ -132,7 +166,7 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
             ),
             const SizedBox(height: 15),
             const Text(
-              "عند إغلاق الحساب، سيتم مسح كافة هويتك الرقمية وصورك من خوادمنا بشكل كامل.",
+              "عند قبول الطلب يُغلق حسابك، ويتولى السيرفر حذف بيانات ملفك الشخصي وصورته في الخلفية.",
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey, fontSize: 13),
             ),
@@ -157,7 +191,7 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      "يتم حذف (الملف الشخصي، الصور، التفاعلات) فوراً وبدون استرجاع.",
+                      "يشمل التنظيف الملف الشخصي وصورته وبياناته التابعة. لا يُقبل الإغلاق مع وجود رصيد أو التزامات مالية. لا يعني إغلاق الحساب حذف كل محتوى المحادثات أو المنشورات المشتركة.",
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white54, fontSize: 12),
                     ),

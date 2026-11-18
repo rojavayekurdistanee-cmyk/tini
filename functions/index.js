@@ -197,12 +197,25 @@ exports.archiveDeletedUser = onDocumentDeleted({
 }, async (event) => {
     const deletedData = event.data.data();
     const userId = event.params.userId;
-    console.log('Archiving ID: ' + userId);
-
-    return db.collection('archived_users').doc(userId).set({
-     ...deletedData,
-        archivedAt: FieldValue.serverTimestamp(),
-        status: 'archived_successfully'
+    // A delayed event may arrive after the temporary closure tombstone expires.
+    // Never archive a deleted Auth identity again. Other Auth errors must fail
+    // rather than being treated as proof that the identity has been removed.
+    try { await require('firebase-admin/auth').getAuth().getUser(userId); }
+    catch (error) {
+        if (error.code === 'auth/user-not-found') return null;
+        throw error;
+    }
+    // Secure closure creates its tombstone atomically with the user deletion.
+    // Check inside a transaction so delayed events cannot recreate its archive.
+    return db.runTransaction(async tx => {
+        const closure = await tx.get(db.doc(`account_deletions/${userId}`));
+        const archive = db.doc(`archived_users/${userId}`);
+        if (closure.exists) { tx.delete(archive); return; }
+        tx.set(archive, {
+            ...deletedData,
+            archivedAt: FieldValue.serverTimestamp(),
+            status: 'archived_successfully'
+        });
     });
 });
 
@@ -1670,3 +1683,5 @@ exports.cleanupExpiredViewOnce = onSchedule({
 Object.assign(exports, require('./public_profiles'));
 // Optional skill exchange; isolated from existing galaxy and throne systems.
 Object.assign(exports, require('./galaxy_matching'));
+// Authenticated server-managed account closure; no client document deletion.
+Object.assign(exports, require('./account_deletion'));

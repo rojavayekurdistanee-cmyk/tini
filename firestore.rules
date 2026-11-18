@@ -55,6 +55,9 @@ service cloud.firestore {
 
     // The full account includes wallet/contact/security data: owner-only.
     // Subcollections below retain their own independent access rules.
+    // Permanent UID tombstones: server-only, no email/birth-date retention.
+    match /account_deletions/{uid} { allow read, write: if false; }
+
     match /users/{userId} {
       // Registration can create the account before its selected birthday is
       // attached. Once either canonical birth field is populated, both fields
@@ -71,6 +74,7 @@ service cloud.firestore {
 
       // الكتابة فقط لصاحب الحساب، أو إذا كان مستخدم جديد + السماح بتعديل العداد
       allow create: if request.auth != null && request.auth.uid == userId
+        && !exists(/databases/$(database)/documents/account_deletions/$(userId))
         && (!exists(/databases/$(database)/documents/wallet_config/runtime)
           || get(/databases/$(database)/documents/wallet_config/runtime).data.get('migrationInProgress', false) != true)
         && request.resource.data.get('tiniBalance', 0) == 0
@@ -79,16 +83,13 @@ service cloud.firestore {
         && !request.resource.data.keys().hasAny(['walletVersion', 'purchaseAccountToken', 'walletDebt',
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
 allow update: if request.auth != null && request.auth.uid == userId
+        && !exists(/databases/$(database)/documents/account_deletions/$(userId))
         && preservesSavedBirthDate()
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'tiniBalance', 'walletVersion', 'purchaseAccountToken', 'walletDebt', 'badge', 'badgeEndsAt',
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
-      allow delete: if request.auth!= null && request.auth.uid == userId
-        && resource.data.get('throneReservedPoints', 0) == 0
-        && resource.data.get('walletDebt', 0) == 0
-        && resource.data.get('tiniBalance', 0) == 0
-        && (!exists(/databases/$(database)/documents/throne_wallets/$(userId))
-          || get(/databases/$(database)/documents/throne_wallets/$(userId)).data.get('reservedPoints', 0) == 0);
+      // Account closure is performed exclusively by requestAccountDeletion.
+      allow delete: if false;
 
       // السماح بالوصول لمجموعة الإعجابات داخل ملف المستخدم
       match /likedPosts/{postId} {
