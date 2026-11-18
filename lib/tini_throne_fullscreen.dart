@@ -532,7 +532,11 @@ class _TiniThroneFullScreenState extends State<TiniThroneFullScreen>
 
   Future<void> _placeBid(CrownProvider crown) async {
     final bid = int.tryParse(bidController.text.trim());
-    if (bid == null || bid <= crown.currentBid) {
+    if (bid == null) {
+      _showMessage('أدخل رقماً صحيحاً للمزايدة', isError: true);
+      return;
+    }
+    if (bid <= crown.currentBid) {
       _showMessage('المزايدة يجب أن تكون أعلى', isError: true);
       return;
     }

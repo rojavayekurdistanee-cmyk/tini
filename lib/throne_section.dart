@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
@@ -334,6 +335,7 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
                     controller: bidController,
                     focusNode: bidFocusNode,
                     keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     style: const TextStyle(color: AppColors.textPrimary, fontSize: 11), // كان 12
                     decoration: InputDecoration(
                       hintText: 'أدخل مزايدتك (${crown.currentBid + 1}+)',
@@ -349,8 +351,12 @@ class _ThroneSectionState extends State<ThroneSection> with TickerProviderStateM
                 const SizedBox(width: 4), // كان 5
                 ElevatedButton(
                   onPressed: crown.isLoading || !crown.canBid ? null : () async {
-                    final bid = int.tryParse(bidController.text);
-                    if (bid == null || bid <= crown.currentBid) {
+                    final bid = int.tryParse(bidController.text.trim());
+                    if (bid == null) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('أدخل رقماً صحيحاً للمزايدة'), backgroundColor: AppColors.error));
+                      return;
+                    }
+                    if (bid <= crown.currentBid) {
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('المزايدة يجب أن تكون أعلى'), backgroundColor: AppColors.error));
                       return;
                     }

@@ -1,10 +1,12 @@
 import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'crown_provider.dart';
 import 'profile_screen.dart';
 import 'throne_badges.dart';
@@ -24,6 +26,57 @@ class _ThroneSocialState extends State<ThroneSocial> {
   bool _baseline = false;
   String? _lastCoronation;
   bool _reacting = false;
+  String? _reactionUid;
+  String? _reactionReign;
+  String? _selectedReaction;
+  bool _reactionReady = false;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _reactionSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _historySub;
+  int _historyLimit = 20;
+  bool _historyStarted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
+      _watchReaction();
+    });
+  }
+
+  void _watchReaction() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final reign = _crown?.coronationId;
+    if (_reactionUid == uid && _reactionReign == reign) return;
+    _reactionSub?.cancel();
+    _reactionUid = uid;
+    _reactionReign = reign;
+    _selectedReaction = null;
+    _reactionReady = false;
+    if (uid != null && reign != null) {
+      _reactionSub = FirebaseFirestore.instance
+          .doc('throne_reigns/$reign/reactions/$uid')
+          .snapshots()
+          .listen(
+            (doc) {
+              if (!mounted || _reactionUid != uid || _reactionReign != reign)
+                return;
+              setState(() {
+                _selectedReaction = doc.data()?['kind'] as String?;
+                _reactionReady = true;
+              });
+            },
+            onError: (Object _) {
+              if (!mounted || _reactionUid != uid || _reactionReign != reign)
+                return;
+              // The callable still returns the authoritative existing choice.
+              setState(() => _reactionReady = true);
+            },
+          );
+    }
+    if (mounted) setState(() {});
+  }
+
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _history = [];
   bool _loadingHistory = false;
   bool _hasMore = true;
@@ -46,6 +99,7 @@ class _ThroneSocialState extends State<ThroneSocial> {
 
   void _changed() {
     final crown = _crown!;
+    _watchReaction();
     if (_auction != crown.auctionId) {
       _auction = crown.auctionId;
       _competitors = _auction == null
@@ -101,46 +155,67 @@ class _ThroneSocialState extends State<ThroneSocial> {
     context,
     MaterialPageRoute(builder: (_) => ProfileScreen(userId: uid)),
   );
-  Future<void> _loadHistory() async {
-    if (_loadingHistory || !_hasMore) return;
+  void _loadHistory() {
+    if (_loadingHistory ||
+        (_historyStarted && !_hasMore && _historyError == null))
+      return;
+    if (_historyStarted && _historyError == null) _historyLimit += 20;
+    _historyStarted = true;
     setState(() {
       _loadingHistory = true;
       _historyError = null;
     });
-    try {
-      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
-          .collection('throne_reigns')
-          .where('completed', isEqualTo: true)
-          .orderBy('crownedAt', descending: true)
-          .limit(20);
-      if (_history.isNotEmpty) query = query.startAfterDocument(_history.last);
-      final page = await query.get();
-      if (!mounted) return;
-      setState(() {
-        _history.addAll(page.docs);
-        _hasMore = page.docs.length == 20;
-      });
-    } catch (_) {
-      if (mounted) {
-        setState(() => _historyError = 'تعذر تحميل التاريخ؛ أعد المحاولة');
-      }
-    } finally {
-      if (mounted) setState(() => _loadingHistory = false);
-    }
+    _historySub?.cancel();
+    final limit = _historyLimit;
+    _historySub = FirebaseFirestore.instance
+        .collection('throne_reigns')
+        .where('completed', isEqualTo: true)
+        .orderBy('crownedAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .listen(
+          (page) {
+            if (!mounted || limit != _historyLimit) return;
+            setState(() {
+              _history
+                ..clear()
+                ..addAll(page.docs);
+              _hasMore = page.docs.length == limit;
+              _loadingHistory = false;
+              _historyError = null;
+            });
+          },
+          onError: (Object _) {
+            if (!mounted || limit != _historyLimit) return;
+            setState(() {
+              _loadingHistory = false;
+              _historyError = 'تعذر تحميل التاريخ؛ أعد المحاولة';
+            });
+          },
+        );
   }
 
   Future<void> _react(String kind) async {
-    if (_reacting || _crown?.coronationId == null) return;
+    if (_reacting ||
+        !_reactionReady ||
+        _selectedReaction != null ||
+        _crown?.coronationId == null ||
+        _reactionUid == null)
+      return;
+    final uid = _reactionUid;
+    final reign = _reactionReign;
     setState(() => _reacting = true);
     try {
-      await FirebaseFunctions.instanceFor(region: 'europe-west1')
+      final result = await FirebaseFunctions.instanceFor(region: 'europe-west1')
           .httpsCallable('reactToThrone')
-          .call({'kind': kind, 'coronationId': _crown!.coronationId});
+          .call({'kind': kind, 'coronationId': reign});
+      if (mounted && _reactionUid == uid && _reactionReign == reign) {
+        setState(() => _selectedReaction = result.data['kind'] as String?);
+      }
     } on FirebaseFunctionsException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(e.message ?? 'تعذر التفاعل')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message ?? 'تعذر التفاعل')));
       }
     } catch (_) {
       if (mounted) {
@@ -156,6 +231,9 @@ class _ThroneSocialState extends State<ThroneSocial> {
   @override
   void dispose() {
     _crown?.removeListener(_changed);
+    _authSub?.cancel();
+    _reactionSub?.cancel();
+    _historySub?.cancel();
     super.dispose();
   }
 
@@ -263,19 +341,39 @@ class _ThroneSocialState extends State<ThroneSocial> {
                 children: {'crown': '👑', 'heart': '❤️', 'fire': '🔥'}.entries
                     .map(
                       (e) => TextButton(
-                        onPressed: _reacting ? null : () => _react(e.key),
-                        child: Text('${e.value} ${counts[e.key] ?? 0}'),
+                        style: TextButton.styleFrom(
+                          backgroundColor: _selectedReaction == e.key
+                              ? Colors.amber.withValues(alpha: 0.2)
+                              : null,
+                          side: _selectedReaction == e.key
+                              ? const BorderSide(color: Colors.amber)
+                              : null,
+                        ),
+                        onPressed:
+                            _reacting ||
+                                !_reactionReady ||
+                                _selectedReaction != null
+                            ? null
+                            : () => _react(e.key),
+                        child: Text(
+                          '${e.value} ${counts[e.key] ?? 0}${_selectedReaction == e.key ? " ✓" : ""}',
+                        ),
                       ),
                     )
                     .toList(),
               );
             },
           ),
+        if (crown.isThroneLocked && _selectedReaction != null)
+          const Text(
+            'تم تسجيل تفاعلك لهذه الفترة ولا يمكن تغييره',
+            textAlign: TextAlign.center,
+          ),
         ExpansionTile(
           key: const PageStorageKey<String>('tini_throne_history_expansion'),
           title: const Text('قاعة الملوك السابقين'),
           onExpansionChanged: (open) {
-            if (open && _history.isEmpty) unawaited(_loadHistory());
+            if (open && !_historyStarted) _loadHistory();
           },
           children: [
             ..._history.map((doc) {
@@ -305,7 +403,7 @@ class _ThroneSocialState extends State<ThroneSocial> {
               const Text('لا توجد فترات حكم مكتملة'),
             if (_loadingHistory)
               const LinearProgressIndicator()
-            else if (_hasMore)
+            else if (_hasMore || _historyError != null)
               TextButton(
                 onPressed: _loadHistory,
                 child: const Text('تحميل المزيد'),
