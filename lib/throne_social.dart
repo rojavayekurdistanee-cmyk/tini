@@ -249,6 +249,11 @@ class _ThroneSocialState extends State<ThroneSocial> {
             textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.amber),
           ),
+        if (crown.availabilityMessage != null && crown.canRefreshAvailability)
+          TextButton(
+            onPressed: crown.sync,
+            child: const Text('إعادة التحقق من توفر المزايدات'),
+          ),
         if (crown.hasPendingBid)
           TextButton(
             onPressed: crown.isLoading
