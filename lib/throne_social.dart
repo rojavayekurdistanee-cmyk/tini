@@ -78,6 +78,8 @@ class _ThroneSocialState extends State<ThroneSocial> {
   }
 
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _history = [];
+  final Map<String, Stream<DocumentSnapshot<Map<String, dynamic>>>>
+  _historyProfiles = {};
   bool _loadingHistory = false;
   bool _hasMore = true;
   String? _historyError;
@@ -385,22 +387,48 @@ class _ThroneSocialState extends State<ThroneSocial> {
               final d = doc.data();
               final start = (d['crownedAt'] as Timestamp).toDate().toLocal();
               final end = (d['endsAt'] as Timestamp).toDate().toLocal();
-              return ListTile(
-                leading: _avatar(d['avatar']),
-                title: Row(
-                  children: [
-                    Flexible(child: Text(d['name'] ?? 'ملك سابق')),
-                    const ThroneBadgeImage(
-                      kind: ThroneBadgeKind.formerKing,
-                      size: 30,
-                      animate: false,
+              final uid = d['uid'] as String;
+              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                key: ValueKey(doc.id),
+                stream: _historyProfiles.putIfAbsent(
+                  uid,
+                  () => FirebaseFirestore.instance
+                      .doc('public_profiles/$uid')
+                      .snapshots(),
+                ),
+                builder: (context, snapshot) {
+                  final profile = snapshot.data?.data();
+                  final fullName = profile?['fullName'] as String? ?? '';
+                  final username = profile?['username'] as String? ?? '';
+                  final name = profile == null
+                      ? d['name'] as String? ?? 'ملك سابق'
+                      : fullName.isNotEmpty
+                      ? fullName
+                      : username.isNotEmpty
+                      ? username
+                      : 'مستخدم';
+                  // An empty current image means the user removed their photo.
+                  final avatar = profile == null
+                      ? d['avatar'] as String?
+                      : profile['profileImg'] as String?;
+                  return ListTile(
+                    leading: _avatar(avatar),
+                    title: Row(
+                      children: [
+                        Flexible(child: Text(name)),
+                        const ThroneBadgeImage(
+                          kind: ThroneBadgeKind.formerKing,
+                          size: 30,
+                          animate: false,
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                subtitle: Text(
-                  '$start — $end\n${(d["durationMs"] as num) ~/ 86400000} يوم • ${d["winningBid"]} نقطة • تتويج ${d["coronationCount"]}',
-                ),
-                onTap: () => _profile(d['uid']),
+                    subtitle: Text(
+                      '$start — $end\n${(d["durationMs"] as num) ~/ 86400000} يوم • ${d["winningBid"]} نقطة • تتويج ${d["coronationCount"]}',
+                    ),
+                    onTap: () => _profile(uid),
+                  );
+                },
               );
             }),
             if (_historyError != null) Text(_historyError!),
