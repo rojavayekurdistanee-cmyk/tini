@@ -1,5 +1,5 @@
 const { onDocumentDeleted } = require("firebase-functions/v2/firestore");
-const { onCall } = require("firebase-functions/v2/https");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
@@ -14,6 +14,53 @@ const axios = require("axios");
 
 admin.initializeApp();
 const db = getFirestore();
+
+// Validate source post and destination account in the same transaction as
+// distribution. Late/retried events cannot resurrect a deleted feed snapshot.
+function liveFeedBatch() {
+    const writes = [];
+    return {
+        set(ref, data) { writes.push({ref, data}); },
+        delete(ref) { writes.push({ref, remove: true}); },
+        async commit() {
+            if (!writes.length) return;
+            await db.runTransaction(async tx => {
+                const sets = writes.filter(w => !w.remove);
+                const refs = sets.flatMap(w => {
+                    const source = db.doc(`posts/${w.data.originalPostId || w.ref.id}`);
+                    return [source, w.ref.path.startsWith('users/')
+                        ? db.doc(`users/${w.ref.path.split('/')[1]}`) : source];
+                });
+                const sources = refs.length ? await tx.getAll(...refs) : [];
+                let i = 0;
+                for (const w of writes) {
+                    if (w.remove) tx.delete(w.ref);
+                    else {
+                        if (sources[i * 2].exists && sources[i * 2 + 1].exists) tx.set(w.ref, w.data);
+                        i++;
+                    }
+                }
+            });
+        }
+    };
+}
+async function writeForLiveAccount(uid, ref, data, options) {
+    return db.runTransaction(async tx => {
+        if (!(await tx.get(db.doc(`users/${uid}`))).exists)
+            throw new HttpsError('failed-precondition', 'الحساب مغلق.');
+        tx.set(ref, data, options || {});
+    });
+}
+async function addLiveActivity(data) {
+    return db.runTransaction(async tx => {
+        const ids = [...new Set([data.fromUid, data.toUid].filter(id => id && id !== 'system'))];
+        if (!ids.length) return;
+        const users = await tx.getAll(...ids.map(id => db.doc(`users/${id}`)));
+        if (users.some(user => !user.exists)) return;
+        tx.create(db.collection('activities').doc(), data);
+    });
+}
+
 
 // [Tini: IAP إعدادات] - لازم تغير هذول
 const ANDROID_PACKAGE_NAME = "com.aras.titistar";
@@ -34,7 +81,7 @@ exports.sendChatPush = onDocumentCreated({
     document: "chat_rooms/{roomId}/messages/{messageId}"
 }, async (event) => {
     const snap = event.data;
-    if (!snap) return null;
+    if (!snap || !(await snap.ref.get()).exists) return null;
     const msg = snap.data();
     const roomId = event.params.roomId;
     const messageId = event.params.messageId;
@@ -134,7 +181,7 @@ exports.sendGroupChatPush = onDocumentCreated({
     document: "group_chats/{groupId}/messages/{messageId}"
 }, async (event) => {
     const snap = event.data;
-    if (!snap) return null;
+    if (!snap || !(await snap.ref.get()).exists) return null;
     const msg = snap.data();
     const groupId = event.params.groupId;
     const messageId = event.params.messageId;
@@ -233,10 +280,12 @@ exports.requestUserDataExport = onCall({
     const userEmail = request.auth.token.email || 'No Email';
 
     try {
-        const userDoc = await db.collection('users').doc(uid).get();
+        await db.runTransaction(async tx => {
+        const userDoc = await tx.get(db.doc(`users/${uid}`));
+        if (!userDoc.exists) throw new HttpsError('failed-precondition', 'الحساب مغلق.');
         const userData = userDoc.exists? userDoc.data() : {};
 
-        await db.collection('archived_users').doc(`export_${uid}_${Date.now()}`).set({
+        tx.set(db.collection('archived_users').doc(`export_${uid}_${Date.now()}`), {
             uid: uid,
             fullName: userData.fullName || 'Unknown',
             username: userData.username || 'user',
@@ -244,6 +293,7 @@ exports.requestUserDataExport = onCall({
             requestedAt: FieldValue.serverTimestamp(),
             type: 'manual_export',
             status: 'completed'
+        });
         });
 
         return { success: true, message: 'تم تسجيل طلب تصدير بياناتك بنجاح' };
@@ -323,17 +373,23 @@ exports.sendTwoFactorEmailCode = onCall({
     const email = request.data.email;
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    await db.collection('users').doc(uid).set({
+    await db.runTransaction(async tx => {
+    const user = await tx.get(db.doc(`users/${uid}`));
+    if (!user.exists) throw new HttpsError('failed-precondition', 'الحساب مغلق.');
+    tx.update(user.ref, {
         twoFactorCode: code,
         twoFactorCodeExpiry: Date.now() + 5 * 60 * 1000
-    }, { merge: true });
+    });
 
-    await db.collection('mail').add({
+    tx.create(db.collection('mail').doc(), {
+        ownerUid: uid,
         to: email,
         message: {
             subject: "رمز التحقق",
             html: `<h2>رمزك هو: ${code}</h2>`
         }
+    });
+
     });
 
     return { success: true };
@@ -345,7 +401,7 @@ exports.sendActivityNotification = onDocumentCreated({
 }, async (event) => {
 
     const snap = event.data;
-    if (!snap) return null;
+    if (!snap || !(await snap.ref.get()).exists) return null;
     const activity = snap.data();
     const toUid = activity.toUid;
     const fromUid = activity.fromUid;
@@ -835,6 +891,7 @@ exports.onPostCreated = onDocumentCreated({
     try {
         // قراءة وحدة بس لكلشي
         const ownerDoc = await db.collection('users').doc(authorId).get();
+        if (!ownerDoc.exists || !(await snap.ref.get()).exists) return null;
         const ownerName = ownerDoc.data()?.fullName || ownerDoc.data()?.username || "مستخدم";
         const ownerAvatar = ownerDoc.data()?.profileImg || ownerDoc.data()?.photoUrl || ownerDoc.data()?.avatarUrl || "";
 
@@ -845,7 +902,7 @@ exports.onPostCreated = onDocumentCreated({
 
         // 1. توزيع feed + friendsFeed حسب الخصوصية
         if (!followersSnap.empty) {
-            let batch = db.batch();
+            let batch = liveFeedBatch();
             let count = 0;
             const privacy = postData.privacy || 'public';
             for (const fDoc of followersSnap.docs) {
@@ -863,7 +920,7 @@ exports.onPostCreated = onDocumentCreated({
                     });
                     count++;
                 }
-                if (count >= 400) { await batch.commit(); batch = db.batch(); count = 0; }
+                if (count >= 400) { await batch.commit(); batch = liveFeedBatch(); count = 0; }
             }
             if (count > 0) await batch.commit();
         }
@@ -898,7 +955,7 @@ getMessaging().sendEach(cleanTokensFollowing.map(token => ({
                     },
                     android: { priority: "high" }
                 })));
-                await db.collection('activities').add({
+                await addLiveActivity({
                     toUid: toUid,
                     fromUid: authorId,
                     type: "following_post",
@@ -956,7 +1013,7 @@ getMessaging().sendEach(cleanTokensPYMK.map(token => ({
                         },
                         android: { priority: "high" }
                     })));
-                    await db.collection('activities').add({
+                    await addLiveActivity({
                         toUid: toUid,
                         fromUid: authorId,
                         type: "people_you_may_know_post",
@@ -1032,7 +1089,7 @@ exports.onPostUpdated = onDocumentUpdated({
     const followingSnap = await db.collection('users').doc(authorId).collection('following').limit(50).get();
     const ownerFollowingSet = new Set(followingSnap.docs.map(d => d.id));
     if (!followersSnap.empty) {
-        let batch = db.batch();
+        let batch = liveFeedBatch();
         let count = 0;
         for (const fDoc of followersSnap.docs) {
             const fid = fDoc.id;
@@ -1042,7 +1099,7 @@ exports.onPostUpdated = onDocumentUpdated({
                 batch.set(db.collection("users").doc(fid).collection("friendsFeed").doc(postId), { ...postData, originalPostId: postId, distributedAt: FieldValue.serverTimestamp() });
                 count++;
             }
-            if (count >= 400) { await batch.commit(); batch = db.batch(); count = 0; }
+            if (count >= 400) { await batch.commit(); batch = liveFeedBatch(); count = 0; }
         }
         if (count > 0) await batch.commit();
     }
@@ -1090,7 +1147,7 @@ exports.onFollowCreated = onDocumentCreated({
 
         const isMutual = await db.collection("users").doc(followedId).collection("following").doc(followerId).get();
 
-        const batch1 = db.batch();
+        const batch1 = liveFeedBatch();
         filteredDocs.forEach(doc => {
             const feedRef = db.collection("users").doc(followerId).collection("feed").doc(doc.id);
             batch1.set(feedRef, {
@@ -1114,7 +1171,7 @@ exports.onFollowCreated = onDocumentCreated({
             console.log(`[FriendsFeed] Mutual detected ${followerId} <-> ${followedId}`);
             const otherPostsSnap = await db.collection("posts").where("uid", "==", followerId).orderBy("createdAt", "desc").limit(30).get();
             const otherFiltered = otherPostsSnap.docs.slice(0,20);
-            const batch2 = db.batch();
+            const batch2 = liveFeedBatch();
             otherFiltered.forEach(doc => {
                 const ref = db.collection("users").doc(followedId).collection("friendsFeed").doc(doc.id);
                 batch2.set(ref, {
@@ -1231,13 +1288,13 @@ exports.updateTrendingFeed = onSchedule({
   const oldDocs = await trendingRef.limit(1000).get();
 
   const batchSize = 400;
-  let batch = db.batch();
+  let batch = liveFeedBatch();
   let opCount = 0;
 
   for (const d of oldDocs.docs) {
     batch.delete(d.ref);
     opCount++;
-    if (opCount >= batchSize) { await batch.commit(); batch = db.batch(); opCount = 0; }
+    if (opCount >= batchSize) { await batch.commit(); batch = liveFeedBatch(); opCount = 0; }
   }
 
   for (const post of top1000) {
@@ -1245,7 +1302,7 @@ exports.updateTrendingFeed = onSchedule({
     const { _createdAt,...cleanPost } = post;
     batch.set(newDoc, cleanPost);
     opCount++;
-    if (opCount >= batchSize) { await batch.commit(); batch = db.batch(); opCount = 0; }
+    if (opCount >= batchSize) { await batch.commit(); batch = liveFeedBatch(); opCount = 0; }
   }
 
   if (opCount > 0) await batch.commit();
@@ -1344,7 +1401,7 @@ getMessaging().sendEach(cleanTokensCustom.map(token => ({
             })));
 
             // 2- داخلي بصفحه الاشعارات
-            await db.collection('activities').add({
+            await addLiveActivity({
                 toUid: myUid,
                 fromUid: top.uid || "system",
                 type: "custom_suggestion",
@@ -1444,7 +1501,7 @@ exports.logInteraction = onCall({ region: "europe-west1" }, async (request) => {
         }
 
         // حظر شامل
-        await db.collection(`users/${myUid}/blockedChannels`).doc(ownerId).set({
+        await writeForLiveAccount(myUid, db.collection(`users/${myUid}/blockedChannels`).doc(ownerId), {
             blockedAt: FieldValue.serverTimestamp(),
             ownerId
         });
@@ -1458,7 +1515,7 @@ exports.logInteraction = onCall({ region: "europe-west1" }, async (request) => {
         await batch.commit();
 
         // 👇 هاد يلي كان ناقص - مشان ما يرجع يطلعلك ابدا بالـ For You
-        await db.collection('userInteractions').doc(`${myUid}_${postId}`).set({
+        await writeForLiveAccount(myUid, db.collection('userInteractions').doc(`${myUid}_${postId}`), {
             userId: myUid,
             postId,
             notInterested: true,
@@ -1469,7 +1526,7 @@ exports.logInteraction = onCall({ region: "europe-west1" }, async (request) => {
     }
 
     const docId = `${myUid}_${postId}`;
-    await db.collection('userInteractions').doc(docId).set({
+    await writeForLiveAccount(myUid, db.collection('userInteractions').doc(docId), {
         userId: myUid,
         postId,
         [type]: true,
@@ -1496,6 +1553,10 @@ exports.onPostDeletedCleanup = onDocumentDeleted({
     document: "posts/{postId}"
 }, async (event) => {
     const postId = event.params.postId;
+    const erasedOwner = event.data?.data()?.uid;
+    // The resumable account eraser already removes every feed/reference. Avoid
+    // launching another all-users scan for each of its deleted posts.
+    if (erasedOwner && (await db.doc(`account_deletions/${erasedOwner}`).get()).exists) return null;
     console.log(`[Full Purge] ${postId}`);
 
     try {
@@ -1685,3 +1746,4 @@ Object.assign(exports, require('./public_profiles'));
 Object.assign(exports, require('./galaxy_matching'));
 // Authenticated server-managed account closure; no client document deletion.
 Object.assign(exports, require('./account_deletion'));
+Object.defineProperty(exports, 'accountErasureTesting', {value: {liveFeedBatch, addLiveActivity, writeForLiveAccount}});

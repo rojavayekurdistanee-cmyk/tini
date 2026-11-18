@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
   [Tini Project Rules]:
   1. File Name: close_account_screen.dart
   2. UI Style: Matched with your colors (0xFF1A222C Surface, 0xFF0F1720 BG).
-  3. Logic: Server-managed closure with retryable profile cleanup.
+  3. Logic: Server-managed closure with retryable owned-content cleanup.
 */
 
 class CloseAccountScreen extends StatefulWidget {
@@ -114,7 +114,7 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         content: const Text(
-          "هل أنت متأكد؟ سيُغلق حسابك نهائياً ويبدأ تنظيف بيانات ملفك الشخصي في الخلفية. لا يمكن التراجع بعد قبول الطلب.",
+          "هل أنت متأكد؟ سيُغلق حسابك نهائياً ويبدأ حذف بياناتك ومنشوراتك وملفاتك ورسائلك في الخلفية. لا يمكن التراجع بعد قبول الطلب.",
           textAlign: TextAlign.center,
           style: TextStyle(color: Colors.white70, fontSize: 14),
         ),
@@ -166,7 +166,7 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
             ),
             const SizedBox(height: 15),
             const Text(
-              "عند قبول الطلب يُغلق حسابك، ويتولى السيرفر حذف بيانات ملفك الشخصي وصورته في الخلفية.",
+              "عند قبول الطلب يُغلق حسابك، ويتولى السيرفر حذف بياناتك ومنشوراتك وملفاتك ورسائلك في الخلفية.",
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey, fontSize: 13),
             ),
@@ -191,7 +191,7 @@ class _CloseAccountScreenState extends State<CloseAccountScreen> {
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      "يشمل التنظيف الملف الشخصي وصورته وبياناته التابعة. لا يُقبل الإغلاق مع وجود رصيد أو التزامات مالية. لا يعني إغلاق الحساب حذف كل محتوى المحادثات أو المنشورات المشتركة.",
+                      "يشمل الحذف بيانات حسابك ومحتواك ورسائلك وتفاعلاتك. تبقى رسائل الآخرين والمجموعات المشتركة والسجلات المالية اللازمة لحماية المعاملات. لا يُقبل الإغلاق مع وجود رصيد أو التزامات مالية.",
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white54, fontSize: 12),
                     ),

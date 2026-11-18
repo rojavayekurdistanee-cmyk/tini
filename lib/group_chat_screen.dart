@@ -282,6 +282,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _sendGroupMediaMessages(List<String> paths, {String caption = '', bool isVideoForce = false, bool isVideoNote = false, bool viewOnce = false}) async {
+    final uploadingUid = FirebaseAuth.instance.currentUser?.uid;
+    if (!mounted || uploadingUid == null) return;
     final provider = Provider.of<GroupChatProvider>(context, listen: false);
     for (int i = 0; i < paths.length; i++) {
       final path = paths[i];
@@ -292,19 +294,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           path.toLowerCase().endsWith('.avi');
       final type = isVideoNote ? 'video_note' : (isVideo? 'video' : 'image');
       final pendingId = '${DateTime.now().millisecondsSinceEpoch}_$i';
-      if (!mounted) return;
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
       _pendingUploads.insert(0, _PendingUpload(id: pendingId, localPath: path, type: type));
       _pendingUploadsRevision.value++;
       try {
         final bool isGif = !isVideo && path.toLowerCase().endsWith('.gif');
         final fileName = '${DateTime.now().millisecondsSinceEpoch}_$i${isVideo? '.mp4' : (isGif ? '.gif' : '.jpg')}';
-        final objectName = 'group_media/${widget.groupId}/$fileName';
+        final objectName = 'group_media/$uploadingUid/${widget.groupId}/$fileName';
         await _validateChatMediaSize(file, isVideo);
         File fileToUpload = file;
         if (isVideo) {
           fileToUpload = await VideoProcessor.compressChatVideo(path);
         }
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
         final url = await R2Service().uploadFile(fileToUpload, objectName);
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
         if (isVideoNote) {
           await provider.sendVideoNote(groupId: widget.groupId, mediaUrl: url);
         } else if (isVideo) {
@@ -315,7 +319,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         _scrollToBottom();
       } catch (e) {
         debugPrint('Upload error: $e');
-        _notifyMediaUploadError(e);
+        if (mounted && FirebaseAuth.instance.currentUser?.uid == uploadingUid) _notifyMediaUploadError(e);
       } finally {
         if (mounted) {
           _pendingUploads.removeWhere((p) => p.id == pendingId);
@@ -327,6 +331,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   // عرض المستند أثناء رفعه، ومنع رفع النسخة نفسها مرتين في الوقت ذاته.
   Future<void> _uploadGroupDocument(_PendingUpload pending) async {
+    final uploadingUid = FirebaseAuth.instance.currentUser?.uid;
+    if (!mounted || uploadingUid == null) return;
     if (_uploadingGroupDocuments.contains(pending.id)) return;
     _uploadingGroupDocuments.add(pending.id);
     if (mounted) setState(() => pending.failed = false);
@@ -338,9 +344,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
       if (size <= 0) throw StateError('المستند فارغ');
       final name = pending.fileName ?? pending.localPath.split(Platform.pathSeparator).last;
-      final objectName = 'group_media/${widget.groupId}/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
+      final objectName = 'group_media/$uploadingUid/${widget.groupId}/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
       final url = await R2Service().uploadDocument(file, objectName);
-      if (!mounted) return;
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
       await context.read<GroupChatProvider>().sendMessage(
         groupId: widget.groupId, text: name, type: 'document', mediaUrl: url,
       );
@@ -364,9 +371,12 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   // إرسال مجموعة وسائط في مستند رسالة واحد بعد اكتمال رفع جميع العناصر.
   Future<void> _sendGroupMediaAlbum(List<Map<String, dynamic>> items) async {
+    final uploadingUid = FirebaseAuth.instance.currentUser?.uid;
+    if (!mounted || uploadingUid == null) return;
     if (items.isEmpty) return;
     if (items.length == 1 || items.any((e) => e['viewOnce'] == true)) {
       for (final item in items) {
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
         if (item['path'] == null) continue;
         await _sendGroupMediaMessages([item['path'].toString()],
           caption: (item['caption'] ?? '').toString(),
@@ -395,11 +405,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         final isVideo = item['isVideo'] == true || lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.avi');
         await _validateChatMediaSize(file, isVideo);
         final ext = isVideo ? '.mp4' : (lower.endsWith('.png') ? '.png' : lower.endsWith('.webp') ? '.webp' : lower.endsWith('.gif') ? '.gif' : '.jpg');
-        final objectName = 'group_media/${widget.groupId}/album_${DateTime.now().microsecondsSinceEpoch}_$i$ext';
+        final objectName = 'group_media/$uploadingUid/${widget.groupId}/album_${DateTime.now().microsecondsSinceEpoch}_$i$ext';
         final upload = isVideo ? await VideoProcessor.compressChatVideo(path) : file;
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
         final url = await R2Service().uploadFile(upload, objectName);
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
         uploaded.add({'url': url, 'isVideo': isVideo});
       }
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
       await provider.sendAlbum(groupId: widget.groupId, mediaItems: uploaded,
         caption: items.map((e) => (e['caption'] ?? '').toString()).where((s) => s.isNotEmpty).join(' '));
       _scrollToBottom();
@@ -1124,13 +1137,22 @@ GestureDetector(
                             _scrollToBottom();
                           },
                           onSendVoice: (path, duration, waveform) async {
-                            final file = File(path);
-                            final compressedFile = await VideoProcessor.compressChatVoice(file);
-                            final fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-                            final objectName = 'group_media/${widget.groupId}/$fileName';
-                            final url = await R2Service().uploadFile(compressedFile, objectName);
-                            await context.read<GroupChatProvider>().sendVoice(groupId: widget.groupId, mediaUrl: url, durationSeconds: duration.inSeconds, waveform: waveform);
-                            _scrollToBottom();
+                            final uploadingUid = FirebaseAuth.instance.currentUser?.uid;
+                            if (!mounted || uploadingUid == null) return;
+                            final voiceProvider = context.read<GroupChatProvider>();
+                            try {
+                              final file = File(path);
+                              final compressedFile = await VideoProcessor.compressChatVoice(file);
+                              if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
+                              final fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+                              final objectName = 'group_media/$uploadingUid/${widget.groupId}/$fileName';
+                              final url = await R2Service().uploadFile(compressedFile, objectName);
+                              if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
+                              await voiceProvider.sendVoice(groupId: widget.groupId, mediaUrl: url, durationSeconds: duration.inSeconds, waveform: waveform);
+                              if (mounted && FirebaseAuth.instance.currentUser?.uid == uploadingUid) _scrollToBottom();
+                            } catch (e) {
+                              if (mounted && FirebaseAuth.instance.currentUser?.uid == uploadingUid) _notifyMediaUploadError(e);
+                            }
                           },
                           onPickLocation: () async {
                             try {
@@ -1364,4 +1386,3 @@ class VideoThumbnail extends StatelessWidget {
     return TiniChatVideoThumbnail(videoUrl: videoUrl);
   }
 }
-
