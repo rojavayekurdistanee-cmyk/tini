@@ -360,7 +360,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final type = isVideoNote ? 'video_note' : (isVideo ? 'video' : 'image');
       final pendingId = '${DateTime.now().microsecondsSinceEpoch}_$i';
 
-      if (!mounted) return;
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
       final pending = _PendingUpload(
         id: pendingId, localPath: path, type: type, viewOnce: viewOnce,
         isVideoNote: isVideoNote, caption: caption, isVideoForce: isVideoForce,
@@ -369,7 +369,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingUploadsRevision.value++;
 
       final fileName = '${DateTime.now().microsecondsSinceEpoch}_$i${isVideo? '.mp4' : '.jpg'}';
-      final objectName = 'chat_media/${FirebaseAuth.instance.currentUser!.uid}/$_chatRoomId/$fileName';
+      final objectName = 'chat_media/$currentUserId/$_chatRoomId/$fileName';
       final r2 = R2Service();
 
       var sent = false;
@@ -380,6 +380,7 @@ class _ChatScreenState extends State<ChatScreen> {
           fileToUpload = await VideoProcessor.compressChatVideo(path);
         }
 
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
         final url = await r2.uploadFile(fileToUpload, objectName);
         if (FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
 
@@ -454,7 +455,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!await file.exists()) throw StateError('التسجيل الصوتي غير موجود');
       final compressedFile = await VideoProcessor.compressChatVoice(file);
       final fileName = 'voice_${DateTime.now().microsecondsSinceEpoch}.m4a';
-      final objectName = 'chat_media/${FirebaseAuth.instance.currentUser!.uid}/$_chatRoomId/$fileName';
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
+      final objectName = 'chat_media/$currentUserId/$_chatRoomId/$fileName';
       final url = await R2Service().uploadFile(compressedFile, objectName);
       if (!mounted || FirebaseAuth.instance.currentUser?.uid != currentUserId) return;
       final result = await context.read<ChatProvider>().sendMessageWithReason(
@@ -530,7 +532,8 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       if (size <= 0) throw StateError('المستند فارغ');
       final name = pending.fileName ?? pending.localPath.split(Platform.pathSeparator).last;
-      final objectName = 'private_media/${FirebaseAuth.instance.currentUser!.uid}/$_chatRoomId/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
+      final objectName = 'private_media/$uploadingUid/$_chatRoomId/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
       final url = await R2Service().uploadDocument(file, objectName);
       if (!mounted || FirebaseAuth.instance.currentUser?.uid != uploadingUid) return;
       final result = await context.read<ChatProvider>().sendMessageWithReason(
@@ -608,8 +611,9 @@ class _ChatScreenState extends State<ChatScreen> {
         final isVideo = items[i]['isVideo'] == true || lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.avi');
         await _validateChatMediaSize(file, isVideo);
         final ext = isVideo ? '.mp4' : (lower.endsWith('.png') ? '.png' : lower.endsWith('.webp') ? '.webp' : lower.endsWith('.gif') ? '.gif' : '.jpg');
-        final objectName = 'chat_media/${FirebaseAuth.instance.currentUser!.uid}/$_chatRoomId/album_${DateTime.now().microsecondsSinceEpoch}_$i$ext';
+        final objectName = 'chat_media/$uid/$_chatRoomId/album_${DateTime.now().microsecondsSinceEpoch}_$i$ext';
         final upload = isVideo ? await VideoProcessor.compressChatVideo(path) : file;
+        if (!mounted || FirebaseAuth.instance.currentUser?.uid != uid) return;
         final url = await R2Service().uploadFile(upload, objectName);
         if (FirebaseAuth.instance.currentUser?.uid != uid) return;
         uploaded.add({'url': url, 'isVideo': isVideo, 'caption': (items[i]['caption'] ?? '').toString()});

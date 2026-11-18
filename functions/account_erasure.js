@@ -58,6 +58,10 @@ function createErasure(db, uid, job, storage) {
     for (const field of ['mediaUrl', 'thumbnailUrl', 'mediaItems']) collect(data[field]);
     return result;
   }
+  function accountAttachment(key) {
+    return key.split('/').length >= 4 &&
+      ['chat_media', 'private_media', 'group_media'].some(kind => key.startsWith(`${kind}/${uid}/`));
+  }
   async function inventoryMessage(doc) {
     if (!supportedMessage(doc)) return;
     const data = doc.data();
@@ -87,8 +91,18 @@ function createErasure(db, uid, job, storage) {
           for (const recipient of recipients) {
             const seen = group ? list(current.data().readBy).includes(recipient)
               : current.data().isSeen === true || current.data().seen === true;
-            if (!seen && Number(room.data().unreadCount[recipient]) > 0)
-              updates.push(new FieldPath('unreadCount', recipient), Number(room.data().unreadCount[recipient]) - 1);
+            const unread = Number(room.data().unreadCount[recipient]);
+            const timestamp = current.data().timestamp;
+            if (seen || !(unread > 0) || typeof timestamp?.toMillis !== 'function') continue;
+            // Hidden read receipts do not mean "unread". The room counter
+            // covers its newest N incoming messages. Include equal timestamps
+            // conservatively: only subtract when this entire suffix is unread.
+            const suffix = await tx.get(doc.ref.parent
+              .where('timestamp', '>=', timestamp)
+              .where('senderId', '!=', recipient)
+              .orderBy('timestamp', 'desc').orderBy('senderId', 'asc').count());
+            if (suffix.data().count <= unread)
+              updates.push(new FieldPath('unreadCount', recipient), unread - 1);
           }
           if (updates.length) tx.update(roomRef, ...updates);
         }
@@ -110,9 +124,20 @@ function createErasure(db, uid, job, storage) {
       for (const field of ['readBy', 'deliveredTo', 'viewedBy', 'deletedFor']) {
         if (Array.isArray(value[field]) && value[field].includes(uid)) patch[field] = value[field].filter(id => id !== uid);
       }
+      // Forwarding private media keeps its URL, not sourceOwnerUid. Recognize
+      // the canonical uploader namespace before that uploader's files are purged.
+      const items = list(value.mediaItems);
+      const keptItems = items.filter(item => ![...mediaKeys({mediaItems: [item]})].some(accountAttachment));
+      const removedItems = keptItems.length !== items.length;
+      if (removedItems) patch.mediaItems = keptItems;
+      const removedMain = accountAttachment(storage.key(value.mediaUrl) || '');
+      if (removedMain) patch.mediaUrl = FieldValue.delete();
+      const removedThumbnail = accountAttachment(storage.key(value.thumbnailUrl) || '');
+      if (removedThumbnail) patch.thumbnailUrl = FieldValue.delete();
+      const removedAttachment = (removedMain || removedItems) && keptItems.length === 0;
       const sourceId = value.sourcePostId || value.postId;
       const removedPost = sourceId ? await tx.get(job.collection('posts').doc(hash(String(sourceId)))) : null;
-      if (value.sourceOwnerUid === uid || removedPost?.exists ||
+      if (removedAttachment || value.sourceOwnerUid === uid || removedPost?.exists ||
           (value.type === 'profile_share' && [value.profileUid, value.sharedUid, value.uid].includes(uid))) {
         // Keep the other sender's message, without the deleted profile snapshot.
         for (const key of Object.keys(value)) if (!['senderId','senderName','senderImg','timestamp','type','isSeen','isDelivered','seen','readBy','deliveredTo','viewedBy','deletedFor'].includes(key)) patch[key] = FieldValue.delete();
