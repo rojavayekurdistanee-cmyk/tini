@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
@@ -43,7 +45,9 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
   String? lastError;
 
   bool _ready = false;
-  bool _enabled = false;
+  bool? _enabled;
+  String? _availabilityReason;
+  bool _checkingAvailability = false;
   bool _disposed = false;
   Duration _serverOffset = Duration.zero;
 
@@ -64,13 +68,41 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
           _pendingOwnerUid != _auth.currentUser?.uid ||
           hasPendingBid);
   bool get isRestoringPendingBid => _pendingLoad != null;
-  bool get enabled => _ready && _enabled;
+  bool get enabled => _ready && _enabled == true;
+  bool get canRefreshAvailability =>
+      _auth.currentUser != null && !_checkingAvailability;
 
-  String? get availabilityMessage => !_ready
-      ? 'نظام العرش بانتظار تفعيل السيرفر'
-      : !_enabled
-      ? 'المزايدات غير مفعلة حالياً'
-      : null;
+  String? get availabilityMessage {
+    if (!_ready) return 'نظام العرش بانتظار تفعيل السيرفر';
+    if (_enabled == true) return null;
+    if (_auth.currentUser == null) return 'سجّل الدخول للمزايدة';
+    if (_checkingAvailability) return 'جارٍ التحقق من توفر المزايدات…';
+    if (_enabled == false) {
+      return switch (_availabilityReason) {
+        'wallet_migration_in_progress' =>
+          'المزايدات متوقفة أثناء تحديث المحفظة',
+        'wallet_migration_required' => 'المزايدات بانتظار إكمال تهيئة المحفظة',
+        'wallet_disabled' => 'المزايدات متوقفة لأن المحفظة غير مفعّلة',
+        'throne_activation_required' =>
+          'المزايدات بانتظار تفعيل نظام العرش من الإدارة',
+        'throne_disabled' => 'المزايدات موقوفة من الإدارة',
+        'throne_schema_required' =>
+          'المزايدات بانتظار تحديث بيانات العرش من الإدارة',
+        'throne_wallet_migration_required' =>
+          'المزايدات بانتظار ربط العرش بالمحفظة الحالية',
+        _ => 'المزايدات غير مفعلة حالياً',
+      };
+    }
+    return switch (_availabilityReason) {
+      'not-found' =>
+        'تعذر الوصول إلى خدمة المزايدات؛ يلزم التحقق من نشر الدالة',
+      'unauthenticated' => 'تعذر التحقق من جلسة الدخول أو توثيق التطبيق',
+      'permission-denied' => 'رفض السيرفر التحقق من توفر المزايدات',
+      'unavailable' ||
+      'deadline-exceeded' => 'تعذر الاتصال بخدمة المزايدات؛ أعد المحاولة',
+      _ => 'تعذر التحقق من توفر المزايدات',
+    };
+  }
 
   DateTime get serverNow => DateTime.now().add(_serverOffset);
 
@@ -79,8 +111,7 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pendingReady &&
       _pendingOwnerUid == _auth.currentUser?.uid &&
       !hasPendingBid &&
-      _ready &&
-      _enabled &&
+      enabled &&
       !_isThroneLocked &&
       _auctionEndsAt != null &&
       _auctionEndsAt!.toDate().isAfter(serverNow);
@@ -100,18 +131,40 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> sync() async {
-    if (_auth.currentUser == null) return;
+    final uid = _auth.currentUser?.uid;
+    final session = _bidSession;
+    if (uid == null ||
+        !_sameBidSession(uid, session) ||
+        _checkingAvailability) {
+      return;
+    }
+    _checkingAvailability = true;
+    notifyListeners();
     try {
       final start = DateTime.now();
       final result = await _functions.httpsCallable('syncThrone').call();
-      _enabled = result.data['enabled'] == true;
+      if (!_sameBidSession(uid, session)) return;
       final midpoint = start.add(DateTime.now().difference(start) ~/ 2);
       _serverOffset = DateTime.fromMillisecondsSinceEpoch(
         (result.data['serverNow'] as num).toInt(),
       ).difference(midpoint);
-      notifyListeners();
+      _enabled = result.data['enabled'] as bool?;
+      _availabilityReason = result.data['availabilityReason'] as String?;
+    } on FirebaseFunctionsException catch (error) {
+      if (_sameBidSession(uid, session)) {
+        _enabled = null;
+        _availabilityReason = error.code;
+      }
     } catch (_) {
-      /* Firestore listeners remain usable offline; bids still require server confirmation. */
+      if (_sameBidSession(uid, session)) {
+        _enabled = null;
+        _availabilityReason = null;
+      }
+    } finally {
+      if (_sameBidSession(uid, session)) {
+        _checkingAvailability = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -289,7 +342,9 @@ class CrownProvider extends ChangeNotifier with WidgetsBindingObserver {
       _pendingRequest = null;
       _pendingAuction = null;
       _pendingAmount = null;
-      _enabled = false;
+      _enabled = null;
+      _availabilityReason = null;
+      _checkingAvailability = false;
       notifyListeners();
 
       if (user != null) {
