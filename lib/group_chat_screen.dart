@@ -298,7 +298,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       try {
         final bool isGif = !isVideo && path.toLowerCase().endsWith('.gif');
         final fileName = '${DateTime.now().millisecondsSinceEpoch}_$i${isVideo? '.mp4' : (isGif ? '.gif' : '.jpg')}';
-        final objectName = 'group_media/${widget.groupId}/$fileName';
+        final objectName = 'group_media/${FirebaseAuth.instance.currentUser!.uid}/${widget.groupId}/$fileName';
         await _validateChatMediaSize(file, isVideo);
         File fileToUpload = file;
         if (isVideo) {
@@ -338,7 +338,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       }
       if (size <= 0) throw StateError('المستند فارغ');
       final name = pending.fileName ?? pending.localPath.split(Platform.pathSeparator).last;
-      final objectName = 'group_media/${widget.groupId}/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
+      final objectName = 'group_media/${FirebaseAuth.instance.currentUser!.uid}/${widget.groupId}/doc_${DateTime.now().microsecondsSinceEpoch}_$name';
       final url = await R2Service().uploadDocument(file, objectName);
       if (!mounted) return;
       await context.read<GroupChatProvider>().sendMessage(
@@ -395,7 +395,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         final isVideo = item['isVideo'] == true || lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.avi');
         await _validateChatMediaSize(file, isVideo);
         final ext = isVideo ? '.mp4' : (lower.endsWith('.png') ? '.png' : lower.endsWith('.webp') ? '.webp' : lower.endsWith('.gif') ? '.gif' : '.jpg');
-        final objectName = 'group_media/${widget.groupId}/album_${DateTime.now().microsecondsSinceEpoch}_$i$ext';
+        final objectName = 'group_media/${FirebaseAuth.instance.currentUser!.uid}/${widget.groupId}/album_${DateTime.now().microsecondsSinceEpoch}_$i$ext';
         final upload = isVideo ? await VideoProcessor.compressChatVideo(path) : file;
         final url = await R2Service().uploadFile(upload, objectName);
         uploaded.add({'url': url, 'isVideo': isVideo});
@@ -1127,7 +1127,7 @@ GestureDetector(
                             final file = File(path);
                             final compressedFile = await VideoProcessor.compressChatVoice(file);
                             final fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-                            final objectName = 'group_media/${widget.groupId}/$fileName';
+                            final objectName = 'group_media/${FirebaseAuth.instance.currentUser!.uid}/${widget.groupId}/$fileName';
                             final url = await R2Service().uploadFile(compressedFile, objectName);
                             await context.read<GroupChatProvider>().sendVoice(groupId: widget.groupId, mediaUrl: url, durationSeconds: duration.inSeconds, waveform: waveform);
                             _scrollToBottom();
