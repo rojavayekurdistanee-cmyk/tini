@@ -214,13 +214,28 @@ exports.placeThroneBid = onCall(options, async request => {
   await advance();
   return bid(getFirestore(), uid, request.data);
 });
+function availability(config, walletConfig, state) {
+  let reason = null;
+  if (walletConfig?.migrationInProgress) reason = 'wallet_migration_in_progress';
+  else if (walletConfig?.version !== 2) reason = 'wallet_migration_required';
+  else if (walletConfig?.enabled !== true) reason = 'wallet_disabled';
+  else if (config?.financialSafetyVersion !== 3) reason = 'throne_activation_required';
+  else if (config?.enabled !== true) reason = 'throne_disabled';
+  else if (state?.schemaVersion !== 3) reason = 'throne_schema_required';
+  else if (state?.walletVersion !== 2) reason = 'throne_wallet_migration_required';
+  return {enabled: reason === null, availabilityReason: reason};
+}
 exports.syncThrone = onCall(options, async request => {
   auth(request);
   const db = getFirestore();
   await advance();
-  const config = (await getFirestore().doc('throne_config/runtime').get()).data();
-  const wc = (await db.doc('wallet_config/runtime').get()).data();
-  return {serverNow: Date.now(), enabled: config?.enabled === true && config?.financialSafetyVersion === 3 && wc?.enabled === true && wc?.version === 2 && !wc?.migrationInProgress};
+  const status = await db.runTransaction(async tx => {
+    const config = (await tx.get(db.doc('throne_config/runtime'))).data();
+    const wc = (await tx.get(db.doc('wallet_config/runtime'))).data();
+    const state = (await tx.get(db.doc('throne_data/current'))).data();
+    return availability(config, wc, state);
+  });
+  return {serverNow: Date.now(), ...status};
 });
 exports.advanceThrone = onSchedule({region: options.region, schedule: "every 1 minutes", retryCount: 3}, () => advance());
 async function react(db, uid, data, clock = Date.now) {
@@ -246,4 +261,4 @@ async function react(db, uid, data, clock = Date.now) {
 }
 exports.reactToThrone = onCall(options, request => react(getFirestore(), auth(request), request.data));
 // Test hooks are non-enumerable so Firebase never discovers them as functions.
-Object.defineProperty(exports, "testing", {value: {auction, bid, advance, react, syncProfile, DAY}});
+Object.defineProperty(exports, "testing", {value: {auction, bid, advance, react, syncProfile, availability, DAY}});
