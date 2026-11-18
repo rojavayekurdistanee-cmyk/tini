@@ -1,5 +1,6 @@
 "use strict";
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {onDocumentUpdated} = require("firebase-functions/v2/firestore");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const {getFirestore, Timestamp, FieldValue} = require("firebase-admin/firestore");
 const {randomUUID} = require("node:crypto");
@@ -171,6 +172,42 @@ async function bid(db, uid, data, clock = Date.now) {
     return result;
   });
 }
+// Read the latest profile inside the transaction: event delivery can be out of order.
+async function syncProfile(db, uid) {
+  return db.runTransaction(async tx => {
+    const profile = (await tx.get(db.doc(`users/${uid}`))).data();
+    const ref = db.doc('throne_data/current');
+    const state = (await tx.get(ref)).data();
+    if (!profile || state?.schemaVersion !== 3) return;
+    const fullName = typeof profile.fullName === 'string' ? profile.fullName : '';
+    const username = typeof profile.username === 'string' ? profile.username : '';
+    const name = (fullName || username || 'مستخدم').slice(0, 200);
+    const avatar = typeof profile.profileImg === 'string' ? profile.profileImg : '';
+    const competitorRef = state.auctionId
+      ? db.doc(`throne_auctions/${state.auctionId}/competitors/${uid}`) : null;
+    const competitor = competitorRef ? await tx.get(competitorRef) : null;
+    const patch = {};
+    for (const role of ['king', 'leader']) {
+      if (state[`${role}Uid`] === uid) {
+        if (state[`${role}Name`] !== name) patch[`${role}Name`] = name;
+        if (state[`${role}Avatar`] !== avatar) patch[`${role}Avatar`] = avatar;
+      }
+    }
+    if (Object.keys(patch).length) tx.update(ref, patch);
+    if (competitor?.exists &&
+        (competitor.data().name !== name || competitor.data().avatar !== avatar)) {
+      tx.update(competitorRef, {name, avatar});
+    }
+  });
+}
+exports.syncThroneProfile = onDocumentUpdated({
+  region: options.region, document: 'users/{uid}', retry: true,
+}, event => {
+  const before = event.data.before.data();
+  const after = event.data.after.data();
+  if (['fullName', 'username', 'profileImg'].every(key => before[key] === after[key])) return;
+  return syncProfile(getFirestore(), event.params.uid);
+});
 exports.placeThroneBid = onCall(options, async request => {
   const uid = auth(request);
   if (request.data?.uid !== uid) fail('unauthenticated', 'تغير الحساب؛ أعد المحاولة');
@@ -209,4 +246,4 @@ async function react(db, uid, data, clock = Date.now) {
 }
 exports.reactToThrone = onCall(options, request => react(getFirestore(), auth(request), request.data));
 // Test hooks are non-enumerable so Firebase never discovers them as functions.
-Object.defineProperty(exports, "testing", {value: {auction, bid, advance, react, DAY}});
+Object.defineProperty(exports, "testing", {value: {auction, bid, advance, react, syncProfile, DAY}});
