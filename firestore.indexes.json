@@ -568,6 +568,12 @@
       "fieldPath": "purgeAt",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "account_deletions",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

@@ -1,5 +1,5 @@
 'use strict';
-const {getFirestore, FieldValue} = require('firebase-admin/firestore');
+const {getFirestore, FieldValue, Timestamp} = require('firebase-admin/firestore');
 const {getAuth} = require('firebase-admin/auth');
 const {onCall, HttpsError} = require('firebase-functions/v2/https');
 const {onDocumentCreated} = require('firebase-functions/v2/firestore');
@@ -88,9 +88,13 @@ async function processDeletion(db, auth, uid, removeImages = deleteProfileImages
       await batch.commit();
     }
     await removeImages(uid);
-    // Retain the minimal UID tombstone, not the email or birth date. It blocks
-    // stale-token recreation of this UID, while a new UID can use the same email.
-    await ref.set({status: 'completed', completedAt: FieldValue.serverTimestamp()});
+    // Keep only a temporary UID tombstone, without email or birth date.
+    // Completion happens after Auth deletion. Two hours from completion is
+    // conservatively later than the one-hour lifetime of its last ID token.
+    // Failed jobs never receive expiresAt and therefore cannot expire early.
+    const completedAt = Timestamp.now();
+    await ref.set({status: 'completed', completedAt,
+      expiresAt: Timestamp.fromMillis(completedAt.toMillis() + 2 * 60 * 60 * 1000)});
   } catch (error) {
     await db.runTransaction(async tx => {
       const current = await tx.get(ref);

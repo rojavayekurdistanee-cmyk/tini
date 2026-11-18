@@ -197,6 +197,14 @@ exports.archiveDeletedUser = onDocumentDeleted({
 }, async (event) => {
     const deletedData = event.data.data();
     const userId = event.params.userId;
+    // A delayed event may arrive after the temporary closure tombstone expires.
+    // Never archive a deleted Auth identity again. Other Auth errors must fail
+    // rather than being treated as proof that the identity has been removed.
+    try { await require('firebase-admin/auth').getAuth().getUser(userId); }
+    catch (error) {
+        if (error.code === 'auth/user-not-found') return null;
+        throw error;
+    }
     // Secure closure creates its tombstone atomically with the user deletion.
     // Check inside a transaction so delayed events cannot recreate its archive.
     return db.runTransaction(async tx => {
