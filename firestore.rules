@@ -56,6 +56,17 @@ service cloud.firestore {
     // The full account includes wallet/contact/security data: owner-only.
     // Subcollections below retain their own independent access rules.
     match /users/{userId} {
+      // Registration can create the account before its selected birthday is
+      // attached. Once either canonical birth field is populated, both fields
+      // are immutable for clients, including field deletion/full replacement.
+      function preservesSavedBirthDate() {
+        let birth = resource.data.get('birthDate', null);
+        let dob = resource.data.get('dob', null);
+        let notSaved = (birth == null || birth == '') && (dob == null || dob == '');
+        return notSaved || !request.resource.data.diff(resource.data)
+          .affectedKeys().hasAny(['birthDate', 'dob']);
+      }
+
       allow read: if request.auth != null && request.auth.uid == userId;
 
       // الكتابة فقط لصاحب الحساب، أو إذا كان مستخدم جديد + السماح بتعديل العداد
@@ -68,6 +79,7 @@ service cloud.firestore {
         && !request.resource.data.keys().hasAny(['walletVersion', 'purchaseAccountToken', 'walletDebt',
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
 allow update: if request.auth != null && request.auth.uid == userId
+        && preservesSavedBirthDate()
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'tiniBalance', 'walletVersion', 'purchaseAccountToken', 'walletDebt', 'badge', 'badgeEndsAt',
           'throneReservedPoints', 'throneCoronations', 'throneFormerKing']);
