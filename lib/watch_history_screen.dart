@@ -202,8 +202,9 @@ class _WatchHistoryScreenState extends State<WatchHistoryScreen> {
           (page) {
             if (!_current(uid, generation) ||
                 page.metadata.isFromCache ||
-                page.metadata.hasPendingWrites)
+                page.metadata.hasPendingWrites) {
               return;
+            }
             final ids = page.docs.map((doc) => doc.id).toSet();
             setState(() {
               if (latest != null) {
@@ -471,8 +472,9 @@ class _WatchHistoryScreenState extends State<WatchHistoryScreen> {
       await TitiProfileEngine().unlock();
       if (!mounted ||
           ModalRoute.of(context)?.isCurrent != true ||
-          !_current(uid, generation))
+          !_current(uid, generation)) {
         return;
+      }
 
       final posts = ValueNotifier<List<DocumentSnapshot>>([selected]);
       final position = ids.indexOf(postId);
