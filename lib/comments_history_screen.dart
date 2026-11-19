@@ -275,7 +275,7 @@ class _CommentsHistoryScreenState extends State<CommentsHistoryScreen> {
       try {
         await closed;
       } finally {
-        await account.cancel();
+        unawaited(account.cancel());
         if (_isCurrent(uid, generation)) {
           try {
             await TitiProfileEngine().unlock();
