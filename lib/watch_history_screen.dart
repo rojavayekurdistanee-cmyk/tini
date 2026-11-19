@@ -581,23 +581,28 @@ class _WatchHistoryScreenState extends State<WatchHistoryScreen> {
       route = MaterialPageRoute<void>(
         builder: (_) => ValueListenableBuilder<List<DocumentSnapshot>>(
           valueListenable: posts,
-          builder: (_, loaded, _) => PostViewScreen(
-            posts: loaded,
-            initialIndex: loaded.indexWhere((post) => post.id == activeId),
-            thumbnailUrl: selected.data()?['thumbnailUrl']?.toString(),
-            isFromProfileGrid: true,
-            watchHistoryAccount: uid,
-            onWatchHistoryPostChanged: (post) {
-              final index = loaded.indexWhere((entry) => entry.id == post.id);
-              if (index < 0) return;
-              if (activeId != post.id) {
-                activeId = post.id;
-                watchPlayingPost(post);
-              }
-              if (index == 0) unawaited(loadNeighbor(false));
-              if (index == loaded.length - 1) unawaited(loadNeighbor(true));
-            },
-          ),
+          builder: (_, loaded, _) {
+            final index = loaded.indexWhere((post) => post.id == activeId);
+            final initialIndex = index < 0 ? 0 : index;
+            final active = loaded[initialIndex].data() as Map<String, dynamic>?;
+            return PostViewScreen(
+              posts: loaded,
+              initialIndex: initialIndex,
+              thumbnailUrl: active?['thumbnailUrl']?.toString(),
+              isFromProfileGrid: true,
+              watchHistoryAccount: uid,
+              onWatchHistoryPostChanged: (post) {
+                final index = loaded.indexWhere((entry) => entry.id == post.id);
+                if (index < 0) return;
+                if (activeId != post.id) {
+                  activeId = post.id;
+                  watchPlayingPost(post);
+                }
+                if (index == 0) unawaited(loadNeighbor(false));
+                if (index == loaded.length - 1) unawaited(loadNeighbor(true));
+              },
+            );
+          },
         ),
       );
       opened = true;
