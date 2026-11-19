@@ -346,10 +346,15 @@ class _WatchHistoryScreenState extends State<WatchHistoryScreen> {
       !doc.metadata.isFromCache && !doc.metadata.hasPendingWrites;
 
   Stream<bool> _watchOwnerAccess(String uid, String owner) {
-    if (uid == owner) return Stream.value(true);
-    if (owner.isEmpty) return Stream.value(false);
-    // Both streams reflect current data, including an unfollow while the grid is open.
+    // Multiple history tiles and the player can listen for the same owner.
     return Stream.multi((controller) {
+      if (uid == owner || owner.isEmpty) {
+        controller.add(uid == owner);
+        unawaited(controller.close());
+        return;
+      }
+
+      // Keep both privacy and follow status live while the grid is open.
       bool? isPrivate;
       bool? follows;
       void emit() {
