@@ -79,7 +79,6 @@ class ActivitiesScreen extends StatelessWidget {
     );
   },
 ),
-            _buildActivityTile(Iconsax.activity, "نشاطاتي"),
           ]),
 
           // --- القسم الثاني: التفاعلات الخارجية ---
