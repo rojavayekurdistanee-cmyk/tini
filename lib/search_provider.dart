@@ -103,9 +103,16 @@ class SearchProvider extends ChangeNotifier {
 
   SearchProvider() {
     _myUid = _auth.currentUser?.uid ?? '';
+    _historyUid = _myUid;
     _audience.addListener(_onAudienceChanged);
     _authSubscription = _auth.authStateChanges().listen((user) {
-      if (_myUid != (user?.uid ?? '')) _resetForViewer(user?.uid ?? '');
+      final uid = user?.uid ?? '';
+      if (_myUid != uid) {
+        _resetForViewer(uid);
+      } else if (_historyUid != uid) {
+        _resetHistoryForViewer(uid);
+        notifyListeners();
+      }
     });
   }
 
@@ -125,9 +132,21 @@ class SearchProvider extends ChangeNotifier {
     _myFollowingList = [];
     _myFollowersList = [];
     _myBlockedList = [];
+    _resetHistoryForViewer(uid);
+    clearSearch();
+  }
+
+  void _resetHistoryForViewer(String uid) {
+    if (_historyUid == uid) return;
+    _historyUid = uid;
     _recentSearches = [];
     _recentSearchesDetailed = [];
-    clearSearch();
+    _historySession = Object();
+    _historyOperations = Future<void>.value();
+    _recentSearchesLoading = false;
+    _recentSearchesLoaded = false;
+    _recentSearchesLoadFailed = false;
+    _recentSearchSaveFailure = null;
   }
 
   bool _requestIsCurrent(int version, String uid) =>
@@ -179,11 +198,11 @@ class SearchProvider extends ChangeNotifier {
 
   // البحث الأخير
   List<String> _recentSearches = [];
-  List<String> get recentSearches => _sameViewer ? _recentSearches : [];
+  List<String> get recentSearches => _sameHistoryViewer ? _recentSearches : [];
 
   // [جديد - ميزة الوقت] سجل مفصل مع تاريخ لكل بحث
   List<Map<String, dynamic>> _recentSearchesDetailed = [];
-  List<Map<String, dynamic>> get recentSearchesDetailed => _sameViewer ? _recentSearchesDetailed : [];
+  List<Map<String, dynamic>> get recentSearchesDetailed => _sameHistoryViewer ? _recentSearchesDetailed : [];
 
   // بيانات المستخدم الحالي للفلترة
   List<String> _myFollowingList = [];
@@ -519,115 +538,177 @@ class SearchProvider extends ChangeNotifier {
     return _searchHashtags(q);
   }
 
-  Future<void> loadRecentSearches() async {
-    _myUid = _auth.currentUser?.uid?? '';
-    if (_myUid.isEmpty) return;
+  static const _historyDeadline = Duration(seconds: 15);
+  String _historyUid = '';
+  Object _historySession = Object();
+  Future<void> _historyOperations = Future<void>.value();
+  bool _recentSearchesLoading = false;
+  bool _recentSearchesLoaded = false;
+  bool _recentSearchesLoadFailed = false;
+  ({String query, Object attempt})? _recentSearchSaveFailure;
 
-    final uid = _myUid;
-    final doc = await UserDocuments.readable(_firestore, uid).get();
-    if (uid != (_auth.currentUser?.uid ?? '') || _disposed) return;
-    if (doc.exists) {
-      final data = doc.data()!;
+  bool get _sameHistoryViewer => _historyUid == (_auth.currentUser?.uid ?? '');
 
-      // [جديد - ميزة الوقت] حاول تقرأ الجديد أولاً
-      if (data['recentSearchesDetailed']!= null) {
-        final List detailed = data['recentSearchesDetailed'];
-        _recentSearchesDetailed = detailed.map((e) {
-          return <String, dynamic>{
-            'query': e['query'].toString(),
-            'timestamp': e['timestamp'] is Timestamp? e['timestamp'] : Timestamp.now(),
-          };
-        }).toList();
-        // حدث القديم للتوافق
-        _recentSearches = _recentSearchesDetailed.map((e) => e['query'] as String).toList();
-      } else {
-        // fallback للقديم
-        _recentSearches = List<String>.from(data['recentSearches']?? []);
-        _recentSearchesDetailed = _recentSearches.map((q) => <String, dynamic>{
-          'query': q,
-          'timestamp': Timestamp.now(),
-        }).toList();
-      }
+  bool get recentSearchesLoading => _sameHistoryViewer && _recentSearchesLoading;
+  bool get recentSearchesLoaded => _sameHistoryViewer && _recentSearchesLoaded;
+  bool get recentSearchesLoadFailed => _sameHistoryViewer && _recentSearchesLoadFailed;
+  ({String query, Object attempt})? get recentSearchSaveFailure =>
+      _sameHistoryViewer ? _recentSearchSaveFailure : null;
+
+  bool _historyIsCurrent(String uid, Object session) =>
+      !_disposed &&
+      uid == _auth.currentUser?.uid &&
+      uid == _historyUid &&
+      identical(session, _historySession);
+
+  Future<void> _queueHistoryOperation(Future<void> Function() operation) {
+    final next = _historyOperations.then((_) => operation());
+    _historyOperations = next.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return next;
+  }
+
+  List<Map<String, dynamic>> _decodeHistory(Map<String, dynamic>? data) {
+    final detailed = data?['recentSearchesDetailed'];
+    if (detailed is List) {
+      return [
+        for (final entry in detailed)
+          if (entry is Map && entry['query'] is String)
+            {
+              'query': entry['query'],
+              'timestamp': entry['timestamp'] is Timestamp
+                  ? entry['timestamp']
+                  : null,
+            },
+      ];
     }
+    final legacy = data?['recentSearches'];
+    return [
+      if (legacy is List)
+        for (final query in legacy.whereType<String>())
+          {'query': query, 'timestamp': null},
+    ];
+  }
+
+  void _applyHistory(List<Map<String, dynamic>> entries) {
+    _recentSearchesDetailed = entries;
+    _recentSearches = entries.map((entry) => entry['query'] as String).toList();
+  }
+
+  Future<void> loadRecentSearches() async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null || _disposed) return;
+    _resetHistoryForViewer(uid);
+    if (_recentSearchesLoading) return;
+
+    final session = _historySession;
+    _recentSearchesLoading = true;
+    _recentSearchesLoadFailed = false;
+    final operation = _queueHistoryOperation(() async {
+      if (!_historyIsCurrent(uid, session)) return;
+      try {
+        final doc = await UserDocuments.readable(
+          _firestore,
+          uid,
+        ).get().timeout(_historyDeadline);
+        if (!_historyIsCurrent(uid, session)) return;
+        if (!doc.exists && doc.metadata.isFromCache) {
+          throw StateError('Search history is unavailable in the local cache');
+        }
+        _applyHistory(_decodeHistory(doc.data()));
+        _recentSearchesLoaded = true;
+      } catch (error) {
+        if (!_historyIsCurrent(uid, session)) return;
+        _recentSearchesLoadFailed = true;
+        debugPrint('Search history load failed: $error');
+      } finally {
+        if (_historyIsCurrent(uid, session)) {
+          _recentSearchesLoading = false;
+          notifyListeners();
+        }
+      }
+    });
     notifyListeners();
+    await operation;
+  }
+
+  Future<void> _writeHistory(
+    List<Map<String, dynamic>> Function(List<Map<String, dynamic>>) update, {
+    String? addedQuery,
+  }) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null || _disposed) return;
+    _resetHistoryForViewer(uid);
+    final session = _historySession;
+    final reference = _firestore.collection('users').doc(uid);
+    await _queueHistoryOperation(() async {
+      if (!_historyIsCurrent(uid, session)) return;
+      try {
+        final entries = await _firestore.runTransaction((transaction) async {
+          if (!_historyIsCurrent(uid, session)) {
+            throw StateError('Search history account changed');
+          }
+          final snapshot = await transaction.get(reference);
+          if (!_historyIsCurrent(uid, session)) {
+            throw StateError('Search history account changed');
+          }
+          final next = update(_decodeHistory(snapshot.data()));
+          if (addedQuery == null && !snapshot.exists) return next;
+          transaction.set(reference, {
+            'recentSearches': next
+                .map((entry) => entry['query'] as String)
+                .toList(),
+            'recentSearchesDetailed': next,
+            if (addedQuery != null)
+              'recentSearchesUpdatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+          return next;
+        }, timeout: _historyDeadline);
+        if (!_historyIsCurrent(uid, session)) return;
+        _applyHistory(entries);
+        _recentSearchesLoaded = true;
+        _recentSearchesLoadFailed = false;
+        if (_recentSearchSaveFailure?.query == addedQuery) {
+          _recentSearchSaveFailure = null;
+        }
+        notifyListeners();
+      } catch (error) {
+        if (!_historyIsCurrent(uid, session)) return;
+        if (addedQuery == null) rethrow;
+        _recentSearchSaveFailure = (query: addedQuery, attempt: Object());
+        debugPrint('Search history save failed: $error');
+        notifyListeners();
+      }
+    });
   }
 
   Future<void> addRecentSearch(String query) async {
-    final q = query.trim();
-    if (q.isEmpty) return;
-
-    _myUid = _auth.currentUser?.uid?? '';
-    if (_myUid.isEmpty) return;
-
-    // [قديم] للتوافق
-    _recentSearches.remove(q);
-    _recentSearches.insert(0, q);
-    if (_recentSearches.length > 50) {
-      _recentSearches = _recentSearches.take(50).toList();
-    }
-
-    // [جديد - ميزة الوقت]
-    _recentSearchesDetailed.removeWhere((e) => e['query'] == q);
-    _recentSearchesDetailed.insert(0, <String, dynamic>{
-      'query': q,
-      'timestamp': Timestamp.now(),
-    });
-    if (_recentSearchesDetailed.length > 50) {
-      _recentSearchesDetailed = _recentSearchesDetailed.take(50).toList();
-    }
-
-    await _firestore.collection('users').doc(_myUid).set({
-      'recentSearches': _recentSearches,
-      'recentSearchesDetailed': _recentSearchesDetailed,
-      'recentSearchesUpdatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    notifyListeners();
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return;
+    final timestamp = Timestamp.now();
+    await _writeHistory(
+      (entries) => [
+        {'query': trimmed, 'timestamp': timestamp},
+        for (final entry in entries)
+          if (entry['query'] != trimmed) entry,
+      ].take(50).toList(),
+      addedQuery: trimmed,
+    );
   }
 
-  Future<void> removeRecentSearch(String query) async {
-    _myUid = _auth.currentUser?.uid?? '';
-    if (_myUid.isEmpty) return;
+  Future<void> removeRecentSearch(String query) =>
+      removeRecentSearches([query]);
 
-    _recentSearches.remove(query);
-    _recentSearchesDetailed.removeWhere((e) => e['query'] == query);
-
-    await _firestore.collection('users').doc(_myUid).update({
-      'recentSearches': _recentSearches,
-      'recentSearchesDetailed': _recentSearchesDetailed,
-    });
-
-    notifyListeners();
+  Future<void> removeRecentSearches(List<String> queries) {
+    final selected = queries.toSet();
+    if (selected.isEmpty) return Future<void>.value();
+    return _writeHistory(
+      (entries) =>
+          entries.where((entry) => !selected.contains(entry['query'])).toList(),
+    );
   }
 
-  // [جديد - ميزة الوقت] حذف مجموعة لصفحة السجل
-  Future<void> removeRecentSearches(List<String> queries) async {
-    _myUid = _auth.currentUser?.uid?? '';
-    if (_myUid.isEmpty) return;
-
-    _recentSearches.removeWhere((q) => queries.contains(q));
-    _recentSearchesDetailed.removeWhere((e) => queries.contains(e['query']));
-
-    await _firestore.collection('users').doc(_myUid).update({
-      'recentSearches': _recentSearches,
-      'recentSearchesDetailed': _recentSearchesDetailed,
-    });
-
-    notifyListeners();
-  }
-
-  Future<void> clearRecentSearches() async {
-    _myUid = _auth.currentUser?.uid?? '';
-    if (_myUid.isEmpty) return;
-
-    _recentSearches.clear();
-    _recentSearchesDetailed.clear();
-
-    await _firestore.collection('users').doc(_myUid).update({
-      'recentSearches': [],
-      'recentSearchesDetailed': [],
-    });
-
-    notifyListeners();
-  }
+  Future<void> clearRecentSearches() => _writeHistory((_) => []);
 }
