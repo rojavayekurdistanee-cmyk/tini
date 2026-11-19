@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'auth_provider.dart' as custom;
 import 'post_provider.dart';
@@ -46,6 +47,8 @@ class PostViewScreen extends StatefulWidget {
   final String? searchQuery;
   final bool isFromTerminated;
   final bool isFromProfileGrid;
+  final String? watchHistoryAccount;
+  final ValueChanged<DocumentSnapshot>? onWatchHistoryPostChanged;
   // [Tini - Owner Reactions Overlay] - تفعيل صريح من شبكة فيديوهات صاحب الحساب فقط.
   final bool showOwnerReactionsOverlay;
   final Function(int)? onIndexChanged;
@@ -70,6 +73,8 @@ class PostViewScreen extends StatefulWidget {
     this.searchQuery,
     this.isFromTerminated = false,
     this.isFromProfileGrid = false,
+    this.watchHistoryAccount,
+    this.onWatchHistoryPostChanged,
     this.showOwnerReactionsOverlay = false,
     this.onIndexChanged,
     this.enablePeopleCarousel = false,
@@ -100,8 +105,13 @@ class _PostViewScreenState extends State<PostViewScreen> {
   bool _highlightTemporarilyInPanel = false;
   // [Tini - Owner Reactions Overlay] - تعطيل حركة الفقاعات أثناء فتح بروفايل كامل.
   bool _isOverlayProfileOpen = false;
-  Set<String> _viewedInSession = {};
+  final _viewedInSession = <(String?, String)>{};
   Timer? _viewTimer;
+  StreamSubscription<User?>? _viewAuthSub;
+  String? _watchedSelection;
+  String? _viewAccount;
+  int _viewSeekGeneration = 0;
+  bool _scrubbingView = false;
 
   // [Fix] دالة موحدة تجيب أفضل رابط - hls أولاً ثم videoUrl
   String _getBestUrl(dynamic post) {
@@ -208,6 +218,16 @@ void initState() {
     initialPage: widget.initialIndex,
   );
   _stablePosts = List.from(widget.posts);
+  _viewAccount = FirebaseAuth.instance.currentUser?.uid;
+  _viewAuthSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+    if (!mounted || _viewAccount == user?.uid) return;
+    _viewAccount = user?.uid;
+    _viewTimer?.cancel();
+    _watchedSelection = null;
+    if (_currentIndex < _stablePosts.length) {
+      _scheduleSmartView(_stablePosts[_currentIndex].id);
+    }
+  });
   BannerManager.instance.watchVisiblePost(this, () {
     if (!mounted || !widget.isFeedActive || ModalRoute.of(context)?.isCurrent != true ||
         _currentIndex < 0 || _currentIndex >= _stablePosts.length) { return null; }
@@ -339,7 +359,10 @@ void initState() {
   @override
   void didUpdateWidget(covariant PostViewScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.isFeedActive) _viewTimer?.cancel();
+    if (!widget.isFeedActive) {
+      _viewTimer?.cancel();
+      _watchedSelection = null;
+    }
     if (widget.isFeedActive && !oldWidget.isFeedActive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && widget.isFeedActive && _currentIndex < _stablePosts.length) {
@@ -349,6 +372,8 @@ void initState() {
       });
     }
     if (widget.posts.isEmpty) {
+      _viewTimer?.cancel();
+      _watchedSelection = null;
       if (_stablePosts.isNotEmpty && _currentIndex < _stablePosts.length) {
         _stopRestrictedSelection(_stablePosts[_currentIndex]);
       }
@@ -430,7 +455,10 @@ void initState() {
               final int pageIndex = _showCarousel && _carouselPos >= 0 && _currentIndex >= _carouselPos
                   ? _currentIndex + 1 : _currentIndex;
               _pageController.jumpToPage(pageIndex);
-              if (!currentStillExists) _handlePageChange(_currentIndex);
+              if (!currentStillExists) {
+                _watchedSelection = null;
+                _handlePageChange(_currentIndex);
+              }
             }
           });
         }
@@ -440,33 +468,92 @@ void initState() {
   }
 
   void _scheduleSmartView(String postId) {
-    if (!widget.isFeedActive) return;
-    final selected = _stablePosts.where((doc) => doc.id == postId);
-    if (selected.isEmpty || !_canViewPost(selected.first)) return;
-    if (_viewedInSession.contains(postId)) return;
+    if (!widget.isFeedActive || _watchedSelection == postId ||
+        _currentIndex >= _stablePosts.length) {
+      return;
+    }
+    final selected = _stablePosts[_currentIndex];
+    if (selected.id != postId || !_canViewPost(selected)) return;
     _viewTimer?.cancel();
 
-    int idx = _stablePosts.indexWhere((p) => p.id == postId);
-    if (idx == -1) return;
-    final map = _stablePosts[idx].data() as Map<String, dynamic>;
-    int seconds = (map['duration'] as int?)?? TitiSingleEngine().player.state.duration.inSeconds;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (widget.watchHistoryAccount != null && widget.watchHistoryAccount != uid) return;
+    final clock = Stopwatch()..start();
+    final home = TitiSingleEngine();
+    final profile = TitiProfileEngine();
+    Duration played = Duration.zero;
+    Duration? previousPosition;
+    var previousTick = Duration.zero;
+    var seekGeneration = _viewSeekGeneration;
+    Object? previousPlayer;
 
-    if (seconds == 0) seconds = 5;
+    _viewTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
+      if (!mounted || !widget.isFeedActive ||
+          _currentIndex >= _stablePosts.length ||
+          _stablePosts[_currentIndex].id != postId ||
+          FirebaseAuth.instance.currentUser?.uid != uid) {
+        timer.cancel();
+        return;
+      }
+      final doc = _stablePosts[_currentIndex];
+      if (!_canViewPost(doc)) {
+        previousPosition = null;
+        return;
+      }
+      final url = _getBestUrl(doc);
+      final isProfile = widget.isFromProfileGrid;
+      final activeUrl = isProfile ? profile.currentUrl : home.currentUrl;
+      final index = isProfile ? profile.activeIndexNotifier.value : home.activeIndexNotifier.value;
+      final urls = isProfile ? profile.playerUrlsNotifier.value : home.playerUrlsNotifier.value;
+      if (!_playbackVisible || WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+          _scrubbingView || url.isEmpty || activeUrl != url || urls[index] != url) {
+        previousPosition = null;
+        return;
+      }
 
-    int waitSeconds;
-    if (seconds <= 2) waitSeconds = 1;
-    else if (seconds <= 6) waitSeconds = 2;
-    else waitSeconds = 5;
+      final player = isProfile ? profile.player : home.player;
+      final state = player.state;
+      if (!state.playing || state.buffering) {
+        previousPosition = null;
+        return;
+      }
 
-    debugPrint("👁 VIDEO $seconds sec -> WAIT $waitSeconds");
+      final now = clock.elapsed;
+      final position = state.position;
+      final previous = previousPosition;
+      final elapsed = now - previousTick;
+      previousPosition = position;
+      previousTick = now;
+      final continuous = identical(previousPlayer, player) &&
+          seekGeneration == _viewSeekGeneration;
+      previousPlayer = player;
+      seekGeneration = _viewSeekGeneration;
+      if (!continuous || previous == null || elapsed > const Duration(milliseconds: 500)) return;
+      final progress = position - previous;
+      if (progress <= Duration.zero ||
+          progress > elapsed * state.rate + const Duration(milliseconds: 150)) {
+        return;
+      }
 
-    _viewTimer = Timer(Duration(seconds: waitSeconds), () {
-      if (!mounted || !widget.isFeedActive) return;
-      if (_stablePosts.isEmpty || _currentIndex < 0 || _currentIndex >= _stablePosts.length) return;
-      if (_stablePosts[_currentIndex].id!= postId) return;
-      if (_viewedInSession.contains(postId) || !_canViewPost(_stablePosts[_currentIndex])) return;
-      _viewedInSession.add(postId);
-      Provider.of<PostProvider>(context, listen: false).incrementView(postId);
+      // Bound credited time by elapsed playback, excluding seeks and stalls.
+      played += progress < elapsed ? progress : elapsed;
+      final data = doc.data() as Map<String, dynamic>;
+      final savedDuration = data['duration'];
+      final duration = savedDuration is num && savedDuration > 0
+          ? savedDuration : state.duration.inSeconds;
+      final seconds = duration == 0 ? 5 : duration;
+      final threshold = seconds <= 2 ? 1 : seconds <= 6 ? 2 : 5;
+      if (played < Duration(seconds: threshold)) return;
+
+      timer.cancel();
+      _watchedSelection = postId;
+      final provider = context.read<PostProvider>();
+      if (uid != null) {
+        unawaited(provider.addToWatchHistory(postId, data, viewerUid: uid));
+      }
+      if (_viewedInSession.add((uid, postId))) {
+        unawaited(provider.incrementView(postId));
+      }
     });
   }
 
@@ -474,6 +561,11 @@ void initState() {
     if (!widget.isFeedActive) return;
     if (index < 0 || index >= _stablePosts.length) return;
     _viewTimer?.cancel();
+    if (_currentIndex >= _stablePosts.length ||
+        _stablePosts[_currentIndex].id != _stablePosts[index].id) {
+      _watchedSelection = null;
+      _scrubbingView = false;
+    }
     setState(() {
       _currentIndex = index;
     });
@@ -504,6 +596,7 @@ void initState() {
       // شلنا الـ Future.delayed 400ms و precache - هو كان سبب التأخير
     } catch (_) {}
     }
+    widget.onWatchHistoryPostChanged?.call(_stablePosts[index]);
     if (widget.onIndexChanged!= null) {
       widget.onIndexChanged!(index);
     }
@@ -651,6 +744,7 @@ void dispose() {
   VideoPlaybackRegistry.unwatch(this);
   _audience.removeListener(_onAudienceChanged);
   _viewTimer?.cancel();
+  _viewAuthSub?.cancel();
   _pageController.dispose();
   if (widget.onSearchExit != null) {
     unawaited(widget.onSearchExit!());
@@ -873,6 +967,11 @@ void dispose() {
                         opacity: _isCommentsOpen ? 0 : 1,
                         child: PostItemContent(
                       tapToTogglePlayback: widget.onSearchExit != null,
+                      onScrubbingChanged: (scrubbing) {
+                        if (realIndex != _currentIndex) return;
+                        _scrubbingView = scrubbing;
+                        _viewSeekGeneration++;
+                      },
                       isFeedActive: widget.isFeedActive,
                       key: ValueKey("post_${postDoc.id}"),
                       postDoc: postDoc,
@@ -1112,6 +1211,7 @@ class PostItemContent extends StatefulWidget {
   final VoidCallback onOpenComments;
   final bool isFromTerminated;
   final bool isFromProfileGrid;
+  final ValueChanged<bool>? onScrubbingChanged;
   final bool showSearchBar;
   final bool isSinglePost;
   final Function(String) onRemovePost;
@@ -1136,6 +1236,7 @@ class PostItemContent extends StatefulWidget {
     required this.onOpenComments,
     this.isFromTerminated = false,
     this.isFromProfileGrid = false,
+    this.onScrubbingChanged,
     this.showSearchBar = false,
     this.isSinglePost = false,
     required this.onRemovePost,
@@ -2178,9 +2279,11 @@ onPressed: () async {
                                         dur.inMilliseconds.toDouble() + 1.0,
                                       ),
                                   max: dur.inMilliseconds.toDouble() + 1.0,
+                                  onChangeStart: (_) => widget.onScrubbingChanged?.call(true),
                                   onChanged: (v) => player.seek(
                                     Duration(milliseconds: v.toInt()),
                                   ),
+                                  onChangeEnd: (_) => widget.onScrubbingChanged?.call(false),
                                 ),
                               ),
                             ),

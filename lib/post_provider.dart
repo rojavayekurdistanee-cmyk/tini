@@ -874,12 +874,15 @@ Stream<bool> isSharedStream(String postId) {
        .snapshots();
   }
 
-    // [Watch History V1 - دالة جديدة - إضافة فقط]
-  Future<void> addToWatchHistory(String postId, Map<String, dynamic> postData) async {
-    final String currentUserId = FirebaseAuth.instance.currentUser?.uid ?? "";
-    if (currentUserId.isEmpty) return;
+  Future<void> addToWatchHistory(
+    String postId,
+    Map<String, dynamic> postData, {
+    required String viewerUid,
+  }) async {
+    if (FirebaseAuth.instance.currentUser?.uid != viewerUid) return;
     try {
-      final ref = _firestore.collection('users').doc(currentUserId).collection('watchHistory').doc(postId);
+      final ref = _firestore.collection('users').doc(viewerUid)
+          .collection('watchHistory').doc(postId);
       await ref.set({
         'postId': postId,
         'thumbnailUrl': postData['thumbnailUrl'] ?? '',
@@ -904,13 +907,6 @@ Stream<bool> isSharedStream(String postId) {
       await _firestore.collection('posts').doc(postId).update({
         'views': FieldValue.increment(1),
       });
-      debugPrint("🚀 [Titi Sync]: تم تسجيل مشاهدة حقيقية للمنشور $postId");
-
-      // [Watch History V1 - ربط السجل بالمشاهدة]
-      final pDoc = await _firestore.collection('posts').doc(postId).get();
-      if (pDoc.exists) {
-        await addToWatchHistory(postId, pDoc.data() as Map<String, dynamic>);
-      }
     } catch (e) {
       debugPrint("❌ [Titi Error]: فشل تحديث عداد العين: $e");
     }
