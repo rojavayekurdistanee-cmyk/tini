@@ -12,6 +12,8 @@ import 'package:firebase_auth/firebase_auth.dart';
     4. Design Ref: صور تيك توك المرفقة - مقسم بالتاريخ + كارد فيه الجهاز والمكان والوقت
 */
 
+enum _LiveWindow { first, tail }
+
 class AccountHistoryScreen extends StatefulWidget {
   const AccountHistoryScreen({super.key});
 
@@ -42,7 +44,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   bool _loading = true;
   bool _hasMore = false;
   bool _failed = false;
-  bool _liveFailed = false;
+  final _liveRetries = <_LiveWindow, VoidCallback>{};
   bool _loadingUndated = false;
   bool _hasUndatedPages = false;
   bool _undatedFailed = false;
@@ -87,7 +89,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
       _loading = false;
       _hasMore = _uid != null;
       _failed = false;
-      _liveFailed = false;
+      _liveRetries.clear();
       _loadingUndated = false;
       _hasUndatedPages = _uid != null;
       _undatedFailed = false;
@@ -131,7 +133,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
           generation,
           visible.map((doc) => doc.id).toSet(),
         );
-        unawaited(_fetchUndated());
+        if (page.docs.isEmpty) unawaited(_fetchUndated());
       } else if (!_newestFirst && !_hasMore) {
         // In oldest-first order, new logins arrive after the loaded tail.
         _listenToTail(
@@ -159,37 +161,27 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     final firstPage = boundary == null
         ? query.limit(_pageSize + 1)
         : query.endAtDocument(boundary);
-    _recentSub = firstPage
-        .snapshots(includeMetadataChanges: true)
-        .listen(
-          (snapshot) {
-            if (!_current(uid, generation) ||
-                snapshot.metadata.isFromCache ||
-                snapshot.metadata.hasPendingWrites) {
-              return;
-            }
-            final visible = boundary == null
-                ? snapshot.docs.take(_pageSize)
-                : snapshot.docs;
-            setState(() {
-              _mergeLiveRows(liveIds, visible);
-              if (boundary == null) {
-                _cursor = visible.isEmpty ? null : visible.last;
-                _hasMore = snapshot.docs.length > _pageSize;
-              }
-            });
-            if (boundary == null && _hasMore) {
-              unawaited(_recentSub?.cancel());
-              _listenToFirstPage(uid, generation, liveIds);
-            }
-          },
-          onError: (Object error) {
-            if (!_current(uid, generation)) return;
-            debugPrint('Login history live update failed: $error');
-            setState(() => _liveFailed = true);
-          },
-          cancelOnError: true,
-        );
+    _watchLive(
+      firstPage,
+      uid,
+      generation,
+      _LiveWindow.first,
+      (snapshot) {
+        final visible = boundary == null
+            ? snapshot.docs.take(_pageSize)
+            : snapshot.docs;
+        _mergeLiveRows(liveIds, visible);
+        if (boundary == null) {
+          _cursor = visible.isEmpty ? null : visible.last;
+          _hasMore = snapshot.docs.length > _pageSize;
+        }
+      },
+      afterSnapshot: () {
+        if (boundary == null && _hasMore) {
+          _listenToFirstPage(uid, generation, liveIds);
+        }
+      },
+    );
   }
 
   void _listenToTail(
@@ -198,8 +190,24 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     QueryDocumentSnapshot<Map<String, dynamic>> cursor,
     Set<String> liveIds,
   ) {
-    _tailSub = _datedHistory(uid)
-        .startAfterDocument(cursor)
+    final tail = _datedHistory(uid).startAfterDocument(cursor);
+    _watchLive(tail, uid, generation, _LiveWindow.tail, (snapshot) {
+      _mergeLiveRows(liveIds, snapshot.docs);
+    });
+  }
+
+  void _watchLive(
+    Query<Map<String, dynamic>> query,
+    String uid,
+    int generation,
+    _LiveWindow window,
+    void Function(QuerySnapshot<Map<String, dynamic>>) apply, {
+    VoidCallback? afterSnapshot,
+  }) {
+    if (!_current(uid, generation)) return;
+    final previous = window == _LiveWindow.first ? _recentSub : _tailSub;
+    unawaited(previous?.cancel());
+    final subscription = query
         .snapshots(includeMetadataChanges: true)
         .listen(
           (snapshot) {
@@ -208,15 +216,39 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                 snapshot.metadata.hasPendingWrites) {
               return;
             }
-            setState(() => _mergeLiveRows(liveIds, snapshot.docs));
+            setState(() {
+              apply(snapshot);
+              _liveRetries.remove(window);
+            });
+            afterSnapshot?.call();
           },
           onError: (Object error) {
             if (!_current(uid, generation)) return;
-            debugPrint('Login history tail update failed: $error');
-            setState(() => _liveFailed = true);
+            debugPrint('Login history live update failed: $error');
+            setState(() {
+              _liveRetries[window] = () => _watchLive(
+                query,
+                uid,
+                generation,
+                window,
+                apply,
+                afterSnapshot: afterSnapshot,
+              );
+            });
           },
           cancelOnError: true,
         );
+    if (window == _LiveWindow.first) {
+      _recentSub = subscription;
+    } else {
+      _tailSub = subscription;
+    }
+  }
+
+  void _retryLiveUpdates() {
+    for (final retry in _liveRetries.values.toList()) {
+      retry();
+    }
   }
 
   void _mergeLiveRows(
@@ -514,8 +546,11 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                   parent: BouncingScrollPhysics(),
                 ),
                 slivers: [
-                  if (_liveFailed)
-                    _pageAction('تعذّر تحديث سجل الحساب. أعد المحاولة', _reset),
+                  if (_liveRetries.isNotEmpty)
+                    _pageAction(
+                      'تعذّر تحديث سجل الحساب. أعد المحاولة',
+                      _retryLiveUpdates,
+                    ),
                   for (final group in grouped.entries) ...[
                     SliverToBoxAdapter(
                       child: Padding(
@@ -607,6 +642,8 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                     _pageAction(
                       _undatedFailed
                           ? 'تعذّر البحث عن السجلات بلا تاريخ. أعد المحاولة'
+                          : _undatedCursor == null
+                          ? 'البحث عن السجلات بلا تاريخ'
                           : 'البحث عن المزيد من السجلات بلا تاريخ',
                       _fetchUndated,
                     ),
