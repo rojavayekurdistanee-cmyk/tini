@@ -12,6 +12,8 @@ import 'package:firebase_auth/firebase_auth.dart';
     4. Design Ref: صور تيك توك المرفقة - مقسم بالتاريخ + كارد فيه الجهاز والمكان والوقت
 */
 
+enum _LiveWindow { first, tail }
+
 class AccountHistoryScreen extends StatefulWidget {
   const AccountHistoryScreen({super.key});
 
@@ -35,17 +37,14 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _recentSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tailSub;
   QueryDocumentSnapshot<Map<String, dynamic>>? _cursor;
-  String? _undatedCursor;
   String? _uid;
   int _generation = 0;
   bool _newestFirst = true;
   bool _loading = true;
   bool _hasMore = false;
   bool _failed = false;
-  bool _liveFailed = false;
-  bool _loadingUndated = false;
-  bool _hasUndatedPages = false;
-  bool _undatedFailed = false;
+  final _liveRetries = <_LiveWindow, VoidCallback>{};
+  final _liveTokens = <_LiveWindow, Object>{};
 
   CollectionReference<Map<String, dynamic>> _history(String uid) =>
       _store.collection('users').doc(uid).collection('login_history');
@@ -83,14 +82,11 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
       _generation++;
       _logs.clear();
       _cursor = null;
-      _undatedCursor = null;
       _loading = false;
       _hasMore = _uid != null;
       _failed = false;
-      _liveFailed = false;
-      _loadingUndated = false;
-      _hasUndatedPages = _uid != null;
-      _undatedFailed = false;
+      _liveRetries.clear();
+      _liveTokens.clear();
     });
     final firstPage = _fetchMore();
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
@@ -126,19 +122,16 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
         _loading = false;
       });
       if (cursor == null) {
-        _listenToFirstPage(
-          uid,
-          generation,
-          visible.map((doc) => doc.id).toSet(),
-        );
-        unawaited(_fetchUndated());
-      } else if (!_newestFirst && !_hasMore) {
+        _listenToFirstPage(uid, generation);
+        if (!_newestFirst && !_hasMore && _cursor != null) {
+          _listenToTail(uid, generation, _cursor!);
+        }
+      } else if (!_newestFirst && !_hasMore && _cursor != null) {
         // In oldest-first order, new logins arrive after the loaded tail.
         _listenToTail(
           uid,
           generation,
-          cursor,
-          visible.map((doc) => doc.id).toSet(),
+          _cursor!,
         );
       }
     } catch (error) {
@@ -151,130 +144,104 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     }
   }
 
-  void _listenToFirstPage(String uid, int generation, Set<String> liveIds) {
-    final boundary = _hasMore ? _cursor : null;
+  // Keep the first live query bounded. Pagination owns _cursor, so incoming
+  // records cannot move the cursor and cause skipped older pages.
+  void _listenToFirstPage(String uid, int generation) {
+    final boundary = _cursor;
     final query = _datedHistory(uid);
-    // A fixed boundary keeps new entries from pushing an unpaged row
-    // out of both the live results and the next cursor page.
     final firstPage = boundary == null
-        ? query.limit(_pageSize + 1)
-        : query.endAtDocument(boundary);
-    _recentSub = firstPage
-        .snapshots(includeMetadataChanges: true)
-        .listen(
-          (snapshot) {
-            if (!_current(uid, generation) ||
-                snapshot.metadata.isFromCache ||
-                snapshot.metadata.hasPendingWrites) {
-              return;
-            }
-            final visible = boundary == null
-                ? snapshot.docs.take(_pageSize)
-                : snapshot.docs;
-            setState(() {
-              _mergeLiveRows(liveIds, visible);
-              if (boundary == null) {
-                _cursor = visible.isEmpty ? null : visible.last;
-                _hasMore = snapshot.docs.length > _pageSize;
-              }
-            });
-            if (boundary == null && _hasMore) {
-              unawaited(_recentSub?.cancel());
-              _listenToFirstPage(uid, generation, liveIds);
-            }
-          },
-          onError: (Object error) {
-            if (!_current(uid, generation)) return;
-            debugPrint('Login history live update failed: $error');
-            setState(() => _liveFailed = true);
-          },
-          cancelOnError: true,
-        );
+        ? query.limit(_pageSize)
+        : query.endAtDocument(boundary).limit(_pageSize);
+    _watchLive(firstPage, uid, generation, _LiveWindow.first, (snapshot) {
+      _mergeLiveRows(snapshot.docs);
+      // In ascending order, new logins fall after the last loaded record.
+      if (!_newestFirst && !_hasMore && _cursor != null &&
+          _tailSub == null) {
+        _listenToTail(uid, generation, _cursor!);
+      }
+    });
   }
 
   void _listenToTail(
     String uid,
     int generation,
     QueryDocumentSnapshot<Map<String, dynamic>> cursor,
-    Set<String> liveIds,
   ) {
-    _tailSub = _datedHistory(uid)
+    // Only watch the newest 30 records after the loaded ascending cursor.
+    // An unbounded tail would charge reads for the whole remaining history.
+    final tail = _datedHistory(uid)
         .startAfterDocument(cursor)
+        .limitToLast(_pageSize);
+    _watchLive(tail, uid, generation, _LiveWindow.tail, (snapshot) {
+      _mergeLiveRows(snapshot.docs);
+    });
+  }
+
+  void _watchLive(
+    Query<Map<String, dynamic>> query,
+    String uid,
+    int generation,
+    _LiveWindow window,
+    void Function(QuerySnapshot<Map<String, dynamic>>) apply, {
+    VoidCallback? afterSnapshot,
+  }) {
+    if (!_current(uid, generation)) return;
+    final token = Object();
+    _liveTokens[window] = token;
+    bool isActive() =>
+        _current(uid, generation) && identical(_liveTokens[window], token);
+    final previous = window == _LiveWindow.first ? _recentSub : _tailSub;
+    unawaited(previous?.cancel());
+    final subscription = query
         .snapshots(includeMetadataChanges: true)
         .listen(
           (snapshot) {
-            if (!_current(uid, generation) ||
+            if (!isActive() ||
                 snapshot.metadata.isFromCache ||
                 snapshot.metadata.hasPendingWrites) {
               return;
             }
-            setState(() => _mergeLiveRows(liveIds, snapshot.docs));
+            setState(() {
+              apply(snapshot);
+              _liveRetries.remove(window);
+            });
+            afterSnapshot?.call();
           },
           onError: (Object error) {
-            if (!_current(uid, generation)) return;
-            debugPrint('Login history tail update failed: $error');
-            setState(() => _liveFailed = true);
+            if (!isActive()) return;
+            debugPrint('Login history live update failed: $error');
+            setState(() {
+              _liveRetries[window] = () => _watchLive(
+                query,
+                uid,
+                generation,
+                window,
+                apply,
+                afterSnapshot: afterSnapshot,
+              );
+            });
           },
           cancelOnError: true,
         );
+    if (window == _LiveWindow.first) {
+      _recentSub = subscription;
+    } else {
+      _tailSub = subscription;
+    }
+  }
+
+  void _retryLiveUpdates() {
+    for (final retry in _liveRetries.values.toList()) {
+      retry();
+    }
   }
 
   void _mergeLiveRows(
-    Set<String> liveIds,
     Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> visible,
   ) {
-    final ids = visible.map((doc) => doc.id).toSet();
-    for (final id in liveIds.difference(ids)) {
-      _logs.remove(id);
-    }
+    // Never treat a query-window exit as deletion of a stored login.
     for (final doc in visible) {
       _logs[doc.id] = doc;
-    }
-    liveIds
-      ..clear()
-      ..addAll(ids);
-  }
-
-  Future<void> _fetchUndated() async {
-    final uid = _uid;
-    final generation = _generation;
-    if (uid == null ||
-        !_current(uid, generation) ||
-        _loadingUndated ||
-        !_hasUndatedPages) {
-      return;
-    }
-    setState(() {
-      _loadingUndated = true;
-      _undatedFailed = false;
-    });
-    try {
-      // A timestamp sort excludes documents where that field is absent.
-      var query = _history(uid).orderBy(FieldPath.documentId);
-      final cursor = _undatedCursor;
-      if (cursor != null) query = query.startAfter([cursor]);
-      final page = await query
-          .limit(_pageSize + 1)
-          .get(_server)
-          .timeout(_deadline);
-      if (!_current(uid, generation)) return;
-      setState(() {
-        for (final doc in page.docs.take(_pageSize)) {
-          _undatedCursor = doc.id;
-          if (_timestamp(doc.data()) == null) {
-            _logs.putIfAbsent(doc.id, () => doc);
-          }
-        }
-        _hasUndatedPages = page.docs.length > _pageSize;
-        _loadingUndated = false;
-      });
-    } catch (error) {
-      if (!_current(uid, generation)) return;
-      debugPrint('Undated login history page failed: $error');
-      setState(() {
-        _loadingUndated = false;
-        _undatedFailed = true;
-      });
     }
   }
 
@@ -402,6 +369,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     _authSub?.cancel();
     _recentSub?.cancel();
     _tailSub?.cancel();
+    _liveTokens.clear();
     _scrollController.dispose();
     super.dispose();
   }
@@ -514,8 +482,11 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                   parent: BouncingScrollPhysics(),
                 ),
                 slivers: [
-                  if (_liveFailed)
-                    _pageAction('تعذّر تحديث سجل الحساب. أعد المحاولة', _reset),
+                  if (_liveRetries.isNotEmpty)
+                    _pageAction(
+                      'تعذّر تحديث سجل الحساب. أعد المحاولة',
+                      _retryLiveUpdates,
+                    ),
                   for (final group in grouped.entries) ...[
                     SliverToBoxAdapter(
                       child: Padding(
@@ -560,12 +531,11 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                   if (docs.isEmpty &&
                       !_loading &&
                       !_hasMore &&
-                      !_failed &&
-                      !_loadingUndated &&
-                      !_hasUndatedPages)
-                    SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: Column(
+                      !_failed)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 56),
+                        child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(
@@ -579,9 +549,10 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                             style: TextStyle(color: Colors.white54),
                           ),
                         ],
+                        ),
                       ),
                     ),
-                  if (_loading || _loadingUndated)
+                  if (_loading)
                     SliverToBoxAdapter(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
@@ -599,16 +570,6 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                           ? 'تعذّر تحميل سجل الحساب. أعد المحاولة'
                           : 'تحميل المزيد',
                       _fetchMore,
-                    ),
-                  if (_hasUndatedPages &&
-                      !_loadingUndated &&
-                      !_loading &&
-                      !_failed)
-                    _pageAction(
-                      _undatedFailed
-                          ? 'تعذّر البحث عن السجلات بلا تاريخ. أعد المحاولة'
-                          : 'البحث عن المزيد من السجلات بلا تاريخ',
-                      _fetchUndated,
                     ),
                   const SliverToBoxAdapter(child: SizedBox(height: 30)),
                 ],
