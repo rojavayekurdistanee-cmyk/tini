@@ -1617,75 +1617,81 @@ const s3 = new S3Client({
   },
 });
 
+function trashObjectKey(value, uid) {
+    const url = new URL(value);
+    const hosts = new Set(['pub-e602981c5b0b476c92bdec7ba140e7de.r2.dev']);
+    if (process.env.R2_PUBLIC_URL) hosts.add(new URL(process.env.R2_PUBLIC_URL).host);
+    if (url.protocol !== 'https:' || !hosts.has(url.host)) {
+        throw new Error('Trash asset URL is outside the configured R2 host');
+    }
+    const key = decodeURIComponent(url.pathname.slice(1));
+    const ownsRaw = key.startsWith(`raw_videos/${uid}_`) &&
+        /^\d+_[A-Z0-9]{8}\.mp4$/.test(key.slice(`raw_videos/${uid}_`.length));
+    const ownsAsset = [`videos/${uid}/`, `thumbnails/${uid}/`]
+        .some(prefix => key.startsWith(prefix) && key.length > prefix.length);
+    if ((!ownsRaw && !ownsAsset) || key.split('/').some(part => part === '..' || part === '.')) {
+        throw new Error('Trash asset key does not match the post owner');
+    }
+    return key;
+}
+
+async function purgeExpiredPost(ref, now) {
+    const claimAt = now.getTime();
+    const leaseMs = 10 * 60 * 1000;
+    const claimed = await db.runTransaction(async transaction => {
+        const doc = await transaction.get(ref);
+        const post = doc.data();
+        if (post?.isDeleted !== true || !(post.expireAt?.toMillis() <= claimAt) ||
+            post.trashPurgeStartedAt?.toMillis() > claimAt - leaseMs) {
+            return null;
+        }
+        if (typeof post.uid !== 'string' || !post.uid || post.uid.includes('/')) {
+            throw new Error('Trash post has no valid owner');
+        }
+        const keys = [...new Set([post.videoUrl, post.thumbnailUrl].filter(Boolean)
+            .map(value => trashObjectKey(value, post.uid)))];
+        transaction.update(ref, {trashPurgeStartedAt: now});
+        return keys;
+    });
+    if (claimed === null) return false;
+
+    for (const key of claimed) {
+        await s3.send(new DeleteObjectCommand({Bucket: process.env.R2_BUCKET_NAME, Key: key}));
+    }
+    return db.runTransaction(async transaction => {
+        const current = await transaction.get(ref);
+        if (current.data()?.isDeleted !== true ||
+            current.data()?.trashPurgeStartedAt?.toMillis() !== claimAt) {
+            return false;
+        }
+        transaction.delete(ref);
+        return true;
+    });
+}
+
 exports.cleanupDeletedPosts = onSchedule({
     region: "europe-west1",
     schedule: "every 24 hours",
     timeoutSeconds: 540,
     memory: "512MiB"
 }, async () => {
-    console.log('[Trash] Starting cleanup...');
     const now = new Date();
-
     const snap = await db.collection('posts')
-      .where('isDeleted', '==', true)
-      .where('expireAt', '<=', now)
-      .limit(200)
-      .get();
+        .where('isDeleted', '==', true)
+        .where('expireAt', '<=', now)
+        .limit(200)
+        .get();
 
-    if (snap.empty) {
-        console.log('[Trash] Nothing to delete');
-        return null;
-    }
-
-    let batch = db.batch();
-    let count = 0;
-
+    let deleted = 0;
     for (const doc of snap.docs) {
-        const data = doc.data();
-        
-        // 1- حذف الفيديو من R2
-        if (data.videoUrl) {
-            try {
-                const url = new URL(data.videoUrl);
-                const key = decodeURIComponent(url.pathname.substring(1));
-                await s3.send(new DeleteObjectCommand({
-                    Bucket: process.env.R2_BUCKET_NAME,
-                    Key: key,
-                }));
-                console.log(`[Trash] Deleted video from R2: ${key}`);
-            } catch (e) {
-                console.log(`[Trash] R2 video delete failed for ${doc.id}:`, e.message);
-            }
-        }
-
-        // 1.1 - حذف الصورة المصغرة من R2
-        if (data.thumbnailUrl) {
-            try {
-                const url = new URL(data.thumbnailUrl);
-                const thumbKey = decodeURIComponent(url.pathname.substring(1));
-                await s3.send(new DeleteObjectCommand({
-                    Bucket: process.env.R2_BUCKET_NAME,
-                    Key: thumbKey,
-                }));
-                console.log(`[Trash] Deleted thumb from R2: ${thumbKey}`);
-            } catch (e) {
-                console.log(`[Trash] R2 thumb delete failed for ${doc.id}:`, e.message);
-            }
-        }
-
-        // 2- حذف الدوكيمنت من Firestore
-        batch.delete(doc.ref);
-        count++;
-        if (count >= 400) {
-            await batch.commit();
-            batch = db.batch();
-            count = 0;
+        try {
+            if (await purgeExpiredPost(doc.ref, now)) deleted++;
+        } catch (error) {
+            // Keep the post for the next scheduled retry if any asset fails.
+            console.error(`[Trash] Cleanup failed for ${doc.id}:`, error.message);
         }
     }
-
-    if (count > 0) await batch.commit();
-
-    console.log(`[Trash] Deleted ${snap.size} expired posts from Firestore + R2`);
+    console.log(`[Trash] Deleted ${deleted} expired posts`);
     return null;
 });
 

@@ -362,18 +362,24 @@ Future<Map<String, dynamic>> getUserBadge(String uid) async {
   }
 
   Future<void> restorePost(String postId) async {
-    try {
-      await _firestore.collection('posts').doc(postId).update({
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('Sign-in required to restore a post');
+    final reference = _firestore.collection('posts').doc(postId);
+    await _firestore.runTransaction((transaction) async {
+      final post = await transaction.get(reference);
+      final data = post.data();
+      if (FirebaseAuth.instance.currentUser?.uid != uid ||
+          data == null || data['uid'] != uid || data['isDeleted'] != true ||
+          data['trashPurgeStartedAt'] != null) {
+        throw StateError('Post is no longer available to restore');
+      }
+      transaction.update(reference, {
         'isDeleted': FieldValue.delete(),
         'deletedAt': FieldValue.delete(),
         'expireAt': FieldValue.delete(),
       });
-      debugPrint("♻️ [Titi Restore]: تمت استعادة $postId");
-      notifyListeners();
-    } catch (e) {
-      debugPrint("🚨 [Titi Restore Error]: $e");
-      rethrow;
-    }
+    }, timeout: const Duration(seconds: 15));
+    notifyListeners();
   }
 
   // [Titi Mechanical]: الحذف النهائي الحقيقي - يستخدم فقط من Cloud Function بعد 30 يوم

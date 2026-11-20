@@ -543,16 +543,21 @@ match /sharedPosts/{postId} {
       allow read: if resource == null || resource.data.get('isDeleted', false) != true || (request.auth != null && resource.data.uid == request.auth.uid);
 
       // الإنشاء: بس صاحب الفيديو
-      allow create: if accountCanWrite() && (request.auth != null && request.resource.data.uid == request.auth.uid);
+      allow create: if accountCanWrite() && request.auth.uid == request.resource.data.uid
+        && !request.resource.data.keys().hasAny(['trashPurgeStartedAt']);
 
       // التحديث: صاحب الفيديو بيقدر يعدل كلشي (نقل للمحذوفات / استعادة) + أي حدا بيقدر يعدل العدادات فقط
-      allow update: if accountCanWrite() && (request.auth != null && (
+      allow update: if accountCanWrite()
+        && resource.data.get('trashPurgeStartedAt', null) == null
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['trashPurgeStartedAt'])
+        && (request.auth != null && (
         resource.data.uid == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'views', 'comments', 'shares', 'favoritesCount', 'isDeleted', 'deletedAt', 'expireAt'])
       ));
 
       // الحذف النهائي: بس صاحب الفيديو
-      allow delete: if accountCanWrite() && (request.auth != null && resource.data.uid == request.auth.uid);
+      allow delete: if accountCanWrite() && request.auth.uid == resource.data.uid
+        && resource.data.get('trashPurgeStartedAt', null) == null;
 
       // [Tini - Owner Reactions Overlay] - فهرس الإعجابات لكل فيديو.
       // صاحب الفيديو يرى الأسماء والأعداد فوق الفيديو، وصاحب الإعجاب يرى تسجيله فقط.

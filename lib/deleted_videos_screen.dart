@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -12,6 +13,31 @@ import 'titi_profile_engine.dart';
 import 'audience_access.dart';
 import 'audience_gate.dart';
 
+const _trashRetention = Duration(days: 30);
+typedef _TrashDoc = QueryDocumentSnapshot<Map<String, dynamic>>;
+
+String _remainingText(Map<String, dynamic> data) {
+  final expires = data['expireAt'];
+  final deleted = data['deletedAt'];
+  final deadline = expires is Timestamp
+      ? expires.toDate()
+      : deleted is Timestamp
+      ? deleted.toDate().add(_trashRetention)
+      : null;
+  if (deadline == null) return 'المدة غير معروفة';
+  final remaining = deadline.difference(DateTime.now());
+  if (remaining <= Duration.zero) return 'انتهت المدة';
+  final seconds = remaining.inSeconds;
+  if (seconds < 3600) return 'متبقي أقل من ساعة';
+  final hours = seconds ~/ 3600;
+  final days = hours ~/ 24;
+  final remainder = hours % 24;
+  if (days == 0) return 'متبقي $hours ساعة';
+  return remainder == 0
+      ? 'متبقي $days يوم'
+      : 'متبقي $days يوم و$remainder ساعة';
+}
+
 class DeletedVideosScreen extends StatefulWidget {
   const DeletedVideosScreen({super.key});
 
@@ -24,56 +50,245 @@ class _DeletedVideosScreenState extends State<DeletedVideosScreen> {
   final Color surfaceColor = const Color(0xFF1A222C);
   final Color titiTeal = Colors.teal;
 
-  List<QueryDocumentSnapshot> _allDocs = [];
-  StreamSubscription? _sub;
-  StreamSubscription? _authSub;
-  bool _isLoading = true;
+  static const _pageSize = 30;
+  final _auth = FirebaseAuth.instance;
+  final _store = FirebaseFirestore.instance;
+  final _scroll = ScrollController();
+  final _docs = ValueNotifier<List<_TrashDoc>>([]);
+  final _pages = <List<_TrashDoc>>[];
+  final _listeners =
+      <int, StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>{};
+  final _watchTokens = <int, Object>{};
+  final _failedWatches = <int, VoidCallback>{};
+  final _restored = <String, Timestamp?>{};
+  StreamSubscription<User?>? _authSub;
+  Timer? _clock;
+  _TrashDoc? _cursor;
+  String? _uid;
+  int _generation = 0;
+  bool _loading = true;
+  bool _hasMore = false;
+  bool _pageFailed = false;
+  bool _opening = false;
 
   @override
   void initState() {
     super.initState();
-    _authSub = FirebaseAuth.instance.authStateChanges().listen((_) {
+    _authSub = _auth.authStateChanges().listen((user) {
       if (!mounted) return;
-      setState(() {
-        _allDocs = [];
-        _isLoading = true;
-      });
-      _listenTrash();
+      _uid = user?.uid;
+      unawaited(_reset());
     });
+    _scroll.addListener(() {
+      if (_scroll.position.extentAfter < 400 && !_pageFailed) {
+        unawaited(_fetchMore());
+      }
+    });
+    _clock = Timer.periodic(const Duration(minutes: 1), (_) => setState(() {}));
   }
 
-  void _listenTrash() {
-    _sub?.cancel();
-    final uid = FirebaseAuth.instance.currentUser?.uid?? '';
-    if (uid.isEmpty) {
-      if (mounted) setState(() => _isLoading = false);
-      return;
+  bool _current(String uid, int generation) =>
+      mounted &&
+      _uid == uid &&
+      _auth.currentUser?.uid == uid &&
+      generation == _generation;
+
+  Query<Map<String, dynamic>> _query(String uid) => _store
+      .collection('posts')
+      .where('uid', isEqualTo: uid)
+      .where('isDeleted', isEqualTo: true)
+      .orderBy('deletedAt', descending: true);
+
+  Future<void> _reset() async {
+    for (final sub in _listeners.values) {
+      unawaited(sub.cancel());
     }
-    _sub = FirebaseFirestore.instance
-   .collection('posts')
-   .where('uid', isEqualTo: uid)
-   .where('isDeleted', isEqualTo: true)
-   .orderBy('deletedAt', descending: true)
-   .snapshots()
-   .listen((snap) {
-      if (!mounted || FirebaseAuth.instance.currentUser?.uid != uid) return;
-      setState(() {
-        _allDocs = snap.docs;
-        _isLoading = false;
-      });
-    }, onError: (e) {
-      debugPrint("⚠ Trash Index Missing: $e");
-      if (!mounted) return;
-      setState(() => _isLoading = false);
+    _listeners.clear();
+    setState(() {
+      _generation++;
+      _pages.clear();
+      _watchTokens.clear();
+      _failedWatches.clear();
+      _restored.clear();
+      _docs.value = [];
+      _cursor = null;
+      _loading = false;
+      _hasMore = _uid != null;
+      _pageFailed = false;
+      _opening = false;
     });
+    await _fetchMore();
   }
 
-  String _remainingText(Timestamp? expireAt) {
-    if (expireAt == null) return 'متبقي 30 يوم';
-    final diff = expireAt.toDate().difference(DateTime.now()).inDays;
-    if (diff <= 0) return 'متبقي أقل من يوم';
-    if (diff == 1) return 'متبقي يوم';
-    return 'متبقي $diff يوم';
+  void _publish() {
+    final unique = <String, _TrashDoc>{};
+    for (final page in _pages) {
+      for (final doc in page) {
+        final deleted = doc.data()['deletedAt'];
+        if (_restored.containsKey(doc.id)) {
+          final previous = _restored[doc.id];
+          if (deleted is! Timestamp ||
+              (previous != null && deleted.compareTo(previous) <= 0))
+            continue;
+          _restored.remove(doc.id);
+        }
+        unique.putIfAbsent(doc.id, () => doc);
+      }
+    }
+    _docs.value = unique.values.toList();
+  }
+
+  Future<void> _fetchMore() async {
+    final uid = _uid;
+    final generation = _generation;
+    if (uid == null || !_current(uid, generation) || _loading || !_hasMore)
+      return;
+    setState(() {
+      _loading = true;
+      _pageFailed = false;
+    });
+    try {
+      var query = _query(uid);
+      final cursor = _cursor;
+      if (cursor != null) query = query.startAfterDocument(cursor);
+      final result = await query
+          .limit(_pageSize + 1)
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 15));
+      if (!_current(uid, generation)) return;
+      final visible = result.docs.take(_pageSize).toList();
+      final index = _pages.length;
+      final end = visible.isEmpty ? null : visible.last;
+      setState(() {
+        _pages.add(visible);
+        _hasMore = result.docs.length > _pageSize;
+        _cursor = end ?? cursor;
+        _loading = false;
+        _publish();
+      });
+      _watchPage(uid, generation, index, query, _hasMore ? end : null);
+    } catch (error) {
+      if (!_current(uid, generation)) return;
+      debugPrint('Trash page failed: $error');
+      setState(() {
+        _loading = false;
+        _pageFailed = true;
+      });
+    }
+  }
+
+  Future<void> _watchPage(
+    String uid,
+    int generation,
+    int index,
+    Query<Map<String, dynamic>> query,
+    _TrashDoc? end,
+  ) async {
+    if (!_current(uid, generation)) return;
+    final token = Object();
+    _watchTokens[index] = token;
+    bool active() =>
+        _current(uid, generation) && identical(_watchTokens[index], token);
+    try {
+      await _listeners[index]?.cancel().timeout(const Duration(seconds: 2));
+    } catch (error) {
+      debugPrint('Trash listener cancellation failed: $error');
+    }
+    if (!active()) return;
+    final bounded = end == null
+        ? query.limit(_pageSize + 1)
+        : query.endAtDocument(end);
+    _listeners[index] = bounded
+        .snapshots(includeMetadataChanges: true)
+        .listen(
+          (result) {
+            if (!active() ||
+                result.metadata.isFromCache ||
+                result.metadata.hasPendingWrites)
+              return;
+            final visible = end == null
+                ? result.docs.take(_pageSize).toList()
+                : result.docs;
+            setState(() {
+              _failedWatches.remove(index);
+              _pages[index] = visible;
+              if (end == null && !_loading && index == _pages.length - 1) {
+                _hasMore = result.docs.length > _pageSize;
+                if (visible.isNotEmpty) _cursor = visible.last;
+              }
+              _publish();
+            });
+            if (end == null &&
+                index == _pages.length - 1 &&
+                _hasMore &&
+                visible.isNotEmpty) {
+              _watchPage(uid, generation, index, query, visible.last);
+            }
+          },
+          onError: (Object error) {
+            if (!active()) return;
+            debugPrint('Trash update failed: $error');
+            setState(
+              () =>
+                  _failedWatches[index] = () =>
+                      _watchPage(uid, generation, index, query, end),
+            );
+          },
+          cancelOnError: true,
+        );
+  }
+
+  Future<void> _open(_TrashDoc doc) async {
+    final uid = _uid;
+    final generation = _generation;
+    if (_opening || uid == null || !_current(uid, generation)) return;
+    _opening = true;
+    try {
+      if (!await AudienceAccess.instance
+          .verifyPost(doc.id)
+          .timeout(const Duration(seconds: 15)))
+        return;
+      if (!_current(uid, generation) ||
+          !_docs.value.any((entry) => entry.id == doc.id))
+        return;
+      try {
+        await TitiSingleEngine().lock();
+        await TitiProfileEngine().unlock();
+      } catch (_) {
+        // The preview also unlocks its playback engine.
+      }
+      if (!mounted ||
+          !_current(uid, generation) ||
+          ModalRoute.of(context)?.isCurrent != true ||
+          !_docs.value.any((entry) => entry.id == doc.id))
+        return;
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DeletedVideoPreviewScreen(
+            docs: _docs,
+            initialId: doc.id,
+            loadMore: _fetchMore,
+            onRestored: (entry) {
+              if (!_current(uid, generation)) return;
+              final deleted = entry.data()['deletedAt'];
+              setState(() {
+                _restored[entry.id] = deleted is Timestamp ? deleted : null;
+                _publish();
+              });
+            },
+          ),
+        ),
+      );
+    } catch (_) {
+      if (_current(uid, generation)) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('تعذّر فتح الفيديو')));
+      }
+    } finally {
+      if (_current(uid, generation)) _opening = false;
+    }
   }
 
   void _showInfo() {
@@ -82,18 +297,36 @@ class _DeletedVideosScreenState extends State<DeletedVideosScreen> {
       builder: (_) => AlertDialog(
         backgroundColor: surfaceColor,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        title: const Text('المحذوفات', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-        content: const Text('سيتم حذف المنشورات نهائياً بعد الوقت الموضح.', style: TextStyle(color: Colors.white70), textAlign: TextAlign.center),
+        title: const Text(
+          'المحذوفات',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.center,
+        ),
+        content: const Text(
+          'سيتم حذف المنشورات نهائياً بعد الوقت الموضح.',
+          style: TextStyle(color: Colors.white70),
+          textAlign: TextAlign.center,
+        ),
         actionsAlignment: MainAxisAlignment.center,
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text('حسناً', style: TextStyle(color: titiTeal)))],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('حسناً', style: TextStyle(color: titiTeal)),
+          ),
+        ],
       ),
     );
   }
 
   @override
   void dispose() {
-    _sub?.cancel();
+    for (final sub in _listeners.values) {
+      unawaited(sub.cancel());
+    }
     _authSub?.cancel();
+    _clock?.cancel();
+    _scroll.dispose();
+    _docs.dispose();
     super.dispose();
   }
 
@@ -105,96 +338,201 @@ class _DeletedVideosScreenState extends State<DeletedVideosScreen> {
         backgroundColor: bgColor,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20), onPressed: () => Navigator.pop(context)),
-        title: const Text('المحذوفات', style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold)),
-        actions: [IconButton(icon: const Icon(Iconsax.info_circle, color: Colors.white70), onPressed: _showInfo)],
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: Colors.white,
+            size: 20,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: const Text(
+          'المحذوفات',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Iconsax.info_circle, color: Colors.white70),
+            onPressed: _showInfo,
+          ),
+        ],
       ),
-      body: _isLoading
-     ? Center(child: CircularProgressIndicator(color: titiTeal))
-          : _allDocs.isEmpty
-         ? Center(
-                  child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(Iconsax.trash, size: 70, color: Colors.white.withValues(alpha: 0.1)),
-                    const SizedBox(height: 12),
-                    const Text('لا يوجد فيديوهات محذوفة', style: TextStyle(color: Colors.white54)),
-                  ]),
-                )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(2),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 3, crossAxisSpacing: 2, mainAxisSpacing: 2, childAspectRatio: 0.72),
-                  itemCount: _allDocs.length,
+      body: RefreshIndicator(
+        onRefresh: _reset,
+        child: CustomScrollView(
+          controller: _scroll,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            if (_failedWatches.isNotEmpty)
+              SliverToBoxAdapter(
+                child: TextButton(
+                  onPressed: () {
+                    for (final retry in _failedWatches.values.toList()) {
+                      retry();
+                    }
+                  },
+                  child: const Text('تعذّر تحديث المحذوفات. أعد المحاولة'),
+                ),
+              ),
+            if (_auth.currentUser?.uid == _uid)
+              SliverPadding(
+                padding: const EdgeInsets.all(2),
+                sliver: SliverGrid.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 2,
+                    mainAxisSpacing: 2,
+                    childAspectRatio: 0.72,
+                  ),
+                  itemCount: _docs.value.length,
                   itemBuilder: (context, index) {
-                    final doc = _allDocs[index];
-                    final data = doc.data() as Map<String, dynamic>;
-                    final thumb = data['thumbnailUrl']?? '';
-                    final expireAt = data['expireAt'] as Timestamp?;
+                    final doc = _docs.value[index];
+                    final data = doc.data();
+                    final thumb = data['thumbnailUrl']?.toString() ?? '';
                     return AudiencePostGate(
                       post: data,
                       postId: doc.id,
                       child: GestureDetector(
-                      onTap: () async {
-                        if (!await AudienceAccess.instance.verifyPost(doc.id)) return;
-                        try {
-                          await TitiSingleEngine().lock();
-                          await TitiProfileEngine().unlock();
-                        } catch (_) {}
-                        if (!context.mounted) return;
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => DeletedVideoPreviewScreen(allDocs: _allDocs, initialIndex: index)));
-                      },
-                      child: Container(
-                        color: surfaceColor,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            thumb.isNotEmpty? CachedNetworkImage(imageUrl: thumb, fit: BoxFit.cover) : const Icon(Iconsax.video, color: Colors.white24),
-                            Positioned(bottom: 0, left: 0, right: 0, child: Container(color: Colors.black.withValues(alpha: 0.7), padding: const EdgeInsets.symmetric(vertical: 4), child: Text(_remainingText(expireAt), style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold), textAlign: TextAlign.center))),
-                          ],
+                        onTap: () => _open(doc),
+                        child: Container(
+                          color: surfaceColor,
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              thumb.isNotEmpty
+                                  ? CachedNetworkImage(
+                                      imageUrl: thumb,
+                                      fit: BoxFit.cover,
+                                    )
+                                  : const Icon(
+                                      Iconsax.video,
+                                      color: Colors.white24,
+                                    ),
+                              Positioned(
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                child: Container(
+                                  color: Colors.black.withValues(alpha: 0.7),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 4,
+                                  ),
+                                  child: Text(
+                                    _remainingText(data),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
                       ),
                     );
                   },
                 ),
+              ),
+            if (_docs.value.isEmpty &&
+                !_loading &&
+                !_hasMore &&
+                !_pageFailed &&
+                _failedWatches.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Iconsax.trash,
+                      size: 70,
+                      color: Colors.white.withValues(alpha: 0.1),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'لا يوجد فيديوهات محذوفة',
+                      style: TextStyle(color: Colors.white54),
+                    ),
+                  ],
+                ),
+              ),
+            if (_loading || _hasMore || _pageFailed)
+              SliverToBoxAdapter(
+                child: Center(
+                  child: _loading
+                      ? CircularProgressIndicator(color: titiTeal)
+                      : TextButton(
+                          onPressed: _fetchMore,
+                          child: Text(
+                            _pageFailed
+                                ? 'تعذّر تحميل المحذوفات. أعد المحاولة'
+                                : 'تحميل المزيد',
+                          ),
+                        ),
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
 
 class DeletedVideoPreviewScreen extends StatefulWidget {
-  final List<QueryDocumentSnapshot> allDocs;
-  final int initialIndex;
-  const DeletedVideoPreviewScreen({super.key, required this.allDocs, required this.initialIndex});
+  final ValueListenable<List<_TrashDoc>> docs;
+  final String initialId;
+  final Future<void> Function() loadMore;
+  final ValueChanged<_TrashDoc> onRestored;
+  const DeletedVideoPreviewScreen({
+    super.key,
+    required this.docs,
+    required this.initialId,
+    required this.loadMore,
+    required this.onRestored,
+  });
 
   @override
-  State<DeletedVideoPreviewScreen> createState() => _DeletedVideoPreviewScreenState();
+  State<DeletedVideoPreviewScreen> createState() =>
+      _DeletedVideoPreviewScreenState();
 }
 
 class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
   late int _currentIndex;
   late PageController _pageController;
   bool _isRestoring = false;
+  late List<_TrashDoc> _visible;
+  Timer? _clock;
+  int _selectionRevision = 0;
+  Future<void>? _stoppingPlayback;
+  bool _adjustingPage = false;
   String? _openingUid;
   StreamSubscription? _authSub;
   bool _sessionChanged = false;
 
   String _getBestUrl(Map<String, dynamic> data) {
-    final hls = (data['hlsPath'] as String?)?.trim()?? "";
+    final hls = (data['hlsPath'] as String?)?.trim() ?? "";
     if (hls.isNotEmpty) return hls;
-    return (data['videoUrl'] as String?)?? "";
-  }
-
-  String _remainingText(Timestamp? expireAt) {
-    if (expireAt == null) return 'متبقي 30 يوم';
-    final diff = expireAt.toDate().difference(DateTime.now()).inDays;
-    if (diff <= 0) return 'متبقي أقل من يوم';
-    if (diff == 1) return 'متبقي يوم';
-    return 'متبقي $diff يوم';
+    return (data['videoUrl'] as String?) ?? "";
   }
 
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: widget.initialIndex);
+    _visible = widget.docs.value;
+    final initial = _visible.indexWhere(
+      (entry) => entry.id == widget.initialId,
+    );
+    _currentIndex = initial < 0 ? 0 : initial;
+    _pageController = PageController(initialPage: _currentIndex);
+    widget.docs.addListener(_updateDocs);
+    _clock = Timer.periodic(const Duration(minutes: 1), (_) => setState(() {}));
     _openingUid = FirebaseAuth.instance.currentUser?.uid;
     AudienceAccess.instance.addListener(_playCurrent);
     _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
@@ -203,23 +541,143 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
       setState(() => _sessionChanged = true);
       if (ModalRoute.of(context)?.isCurrent == true) Navigator.pop(context);
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _playCurrent());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_visible.isEmpty) {
+        _closeWhenEmpty();
+      } else {
+        _playCurrent();
+        _loadNearEnd();
+      }
+    });
+  }
+
+  void _loadNearEnd() {
+    if (_currentIndex >= _visible.length - 3) unawaited(widget.loadMore());
+  }
+
+  void _closeWhenEmpty() {
+    if (mounted &&
+        _visible.isEmpty &&
+        ModalRoute.of(context)?.isCurrent == true) {
+      Navigator.pop(context);
+    }
+  }
+
+  void _updateDocs() {
+    if (!mounted) return;
+    final oldIndex = _currentIndex;
+    final previous = _visible.isEmpty ? null : _visible[oldIndex];
+    final next = widget.docs.value;
+    final current = next.indexWhere((doc) => doc.id == previous?.id);
+    final lostCurrent = current < 0 && previous != null;
+    final nextIndex = next.isEmpty
+        ? 0
+        : current >= 0
+        ? current
+        : oldIndex.clamp(0, next.length - 1).toInt();
+    if (!_adjustingPage && !lostCurrent && nextIndex == oldIndex) {
+      setState(() => _visible = next);
+      if (next.isEmpty) return;
+      if (previous == null ||
+          previous.data()['trashPurgeStartedAt'] !=
+              next[nextIndex].data()['trashPurgeStartedAt'] ||
+          _getBestUrl(previous.data()) != _getBestUrl(next[nextIndex].data())) {
+        _playCurrent();
+      }
+      return;
+    }
+    if (lostCurrent) _stoppingPlayback = TitiProfileEngine().stop();
+    final revision = ++_selectionRevision;
+    _adjustingPage = true;
+    setState(() {
+      _visible = next;
+      _currentIndex = nextIndex;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || revision != _selectionRevision) return;
+      if (_visible.isEmpty) {
+        _closeWhenEmpty();
+        return;
+      }
+      if (_pageController.hasClients) _pageController.jumpToPage(_currentIndex);
+      if (_stoppingPlayback case final stop?) {
+        await stop;
+        if (!mounted || revision != _selectionRevision || _sessionChanged)
+          return;
+        await TitiProfileEngine().unlock();
+        if (!mounted || revision != _selectionRevision || _sessionChanged)
+          return;
+        _stoppingPlayback = null;
+      }
+      _adjustingPage = false;
+      _playCurrent();
+      _loadNearEnd();
+    });
+  }
+
+  Future<void> _restoreCurrent() async {
+    if (_isRestoring ||
+        _visible.isEmpty ||
+        FirebaseAuth.instance.currentUser?.uid != _openingUid)
+      return;
+    final doc = _visible[_currentIndex];
+    final provider = context.read<PostProvider>();
+    final onRestored = widget.onRestored;
+    setState(() => _isRestoring = true);
+    try {
+      if (!await AudienceAccess.instance
+          .verifyPost(doc.id)
+          .timeout(const Duration(seconds: 15))) {
+        throw StateError('Video is unavailable for restore');
+      }
+      if (!mounted || FirebaseAuth.instance.currentUser?.uid != _openingUid)
+        return;
+      await provider.restorePost(doc.id);
+      if (mounted && FirebaseAuth.instance.currentUser?.uid == _openingUid) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تمت استعادة الفيديو'),
+            backgroundColor: Colors.teal,
+          ),
+        );
+      }
+      onRestored(doc);
+    } catch (error) {
+      if (mounted && FirebaseAuth.instance.currentUser?.uid == _openingUid) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تعذّرت استعادة الفيديو. حاول مرة أخرى'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isRestoring = false);
+    }
   }
 
   String? _allowedUrl(int index) {
-    if (index < 0 || index >= widget.allDocs.length) return null;
-    final doc = widget.allDocs[index];
-    final data = doc.data() as Map<String, dynamic>;
-    if (!AudienceAccess.instance.canViewPost(data, postId: doc.id)) return null;
+    if (index < 0 || index >= _visible.length) return null;
+    final doc = _visible[index];
+    final data = doc.data();
+    if (data['trashPurgeStartedAt'] != null ||
+        !AudienceAccess.instance.canViewPost(data, postId: doc.id))
+      return null;
     return _getBestUrl(data);
   }
 
   void _playCurrent() {
-    if (!mounted || _sessionChanged || FirebaseAuth.instance.currentUser?.uid != _openingUid) return;
-    if (ModalRoute.of(context)?.isCurrent != true || widget.allDocs.isEmpty) return;
-    final data = widget.allDocs[_currentIndex].data() as Map<String, dynamic>;
+    if (!mounted ||
+        _sessionChanged ||
+        FirebaseAuth.instance.currentUser?.uid != _openingUid)
+      return;
+    if (ModalRoute.of(context)?.isCurrent != true || _visible.isEmpty) return;
+    final data = _visible[_currentIndex].data();
     final url = _getBestUrl(data);
-    if (url.isEmpty) return;
+    if (_adjustingPage || url.isEmpty) {
+      unawaited(TitiProfileEngine().pause());
+      return;
+    }
     if (_allowedUrl(_currentIndex) == null) {
       // انتظار التحقق لا يقفل المحرك عن صاحب الفيديو بعد عودة الاتصال.
       TitiProfileEngine().pause();
@@ -229,15 +687,27 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
     String? prev, prevPrev, next, nextNext, nextNextNext;
     if (_currentIndex - 1 >= 0) prev = _allowedUrl(_currentIndex - 1);
     if (_currentIndex - 2 >= 0) prevPrev = _allowedUrl(_currentIndex - 2);
-    if (_currentIndex + 1 < widget.allDocs.length) next = _allowedUrl(_currentIndex + 1);
-    if (_currentIndex + 2 < widget.allDocs.length) nextNext = _allowedUrl(_currentIndex + 2);
-    if (_currentIndex + 3 < widget.allDocs.length) nextNextNext = _allowedUrl(_currentIndex + 3);
+    if (_currentIndex + 1 < _visible.length)
+      next = _allowedUrl(_currentIndex + 1);
+    if (_currentIndex + 2 < _visible.length)
+      nextNext = _allowedUrl(_currentIndex + 2);
+    if (_currentIndex + 3 < _visible.length)
+      nextNextNext = _allowedUrl(_currentIndex + 3);
 
-    TitiProfileEngine().playSingleUrl(url, prevUrl: prev, prevPrevUrl: prevPrev, nextUrl: next, nextNextUrl: nextNext, nextNextNextUrl: nextNextNext);
+    TitiProfileEngine().playSingleUrl(
+      url,
+      prevUrl: prev,
+      prevPrevUrl: prevPrev,
+      nextUrl: next,
+      nextNextUrl: nextNext,
+      nextNextNextUrl: nextNextNext,
+    );
   }
 
   @override
   void dispose() {
+    widget.docs.removeListener(_updateDocs);
+    _clock?.cancel();
     AudienceAccess.instance.removeListener(_playCurrent);
     _authSub?.cancel();
     _pageController.dispose();
@@ -247,14 +717,14 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_sessionChanged) return const Scaffold(backgroundColor: Colors.black);
+    if (_sessionChanged || _visible.isEmpty)
+      return const Scaffold(backgroundColor: Colors.black);
     final double screenHeight = MediaQuery.of(context).size.height;
     final double topBarHeight = screenHeight * 0.032;
     final double bottomBarHeight = screenHeight * 0.0775;
     const Color titiDarkBG = Color(0xFF000000);
 
-    final currentData = widget.allDocs[_currentIndex].data() as Map<String, dynamic>;
-    final expireAt = currentData['expireAt'] as Timestamp?;
+    final currentData = _visible[_currentIndex].data();
 
     return Scaffold(
       backgroundColor: titiDarkBG,
@@ -263,42 +733,46 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
           PageView.builder(
             controller: _pageController,
             scrollDirection: Axis.vertical,
-            itemCount: widget.allDocs.length,
+            itemCount: _visible.length,
             onPageChanged: (i) {
+              if (_adjustingPage || i >= _visible.length) return;
               setState(() => _currentIndex = i);
               _playCurrent();
+              _loadNearEnd();
             },
             itemBuilder: (context, index) {
-              final doc = widget.allDocs[index];
-              final data = doc.data() as Map<String, dynamic>;
+              final doc = _visible[index];
+              final data = doc.data();
               final videoUrl = _getBestUrl(data);
               final thumb = data['thumbnailUrl'] as String?;
 
               // نفس مكان TitiVideoPlayer بس فيديو يملي الشاشة
               return AudiencePostGate(
+                key: ValueKey(doc.id),
                 post: data,
                 postId: doc.id,
                 child: SizedBox.expand(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (thumb!= null && thumb.isNotEmpty)
-                      CachedNetworkImage(imageUrl: thumb, fit: BoxFit.cover),
-                    ValueListenableBuilder<List<String>>(
-                      valueListenable: TitiProfileEngine().playerUrlsNotifier,
-                      builder: (context, urls, _) {
-                        final myIdx = urls.indexOf(videoUrl);
-                        if (myIdx == -1) return const SizedBox.shrink();
-                        return Video(
-                          controller: TitiProfileEngine().getControllerByIndex(myIdx),
-                          fit: BoxFit.cover,
-                          fill: Colors.transparent,
-                          controls: (s) => const SizedBox.shrink(),
-                        );
-                      },
-                    ),
-                  ],
-                ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (thumb != null && thumb.isNotEmpty)
+                        CachedNetworkImage(imageUrl: thumb, fit: BoxFit.cover),
+                      ValueListenableBuilder<List<String>>(
+                        valueListenable: TitiProfileEngine().playerUrlsNotifier,
+                        builder: (context, urls, _) {
+                          final myIdx = urls.indexOf(videoUrl);
+                          if (myIdx == -1) return const SizedBox.shrink();
+                          return Video(
+                            controller: TitiProfileEngine()
+                                .getControllerByIndex(myIdx),
+                            fit: BoxFit.cover,
+                            fill: Colors.transparent,
+                            controls: (s) => const SizedBox.shrink(),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               );
             },
@@ -314,8 +788,25 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
               padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
               child: Row(
                 children: [
-                  IconButton(icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 18), onPressed: () => Navigator.pop(context)),
-                  Expanded(child: Text(_remainingText(expireAt), style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold), textAlign: TextAlign.center)),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                  Expanded(
+                    child: Text(
+                      _remainingText(currentData),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
                   const SizedBox(width: 48),
                 ],
               ),
@@ -334,24 +825,37 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
                   width: 110,
                   height: 36,
                   child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, padding: EdgeInsets.zero, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-                    onPressed: _isRestoring? null : () async {
-                      setState(() => _isRestoring = true);
-                      try {
-                        final currentDocId = widget.allDocs[_currentIndex].id;
-                        if (FirebaseAuth.instance.currentUser?.uid != _openingUid ||
-                            !await AudienceAccess.instance.verifyPost(currentDocId)) return;
-                        if (!context.mounted) return;
-                        await Provider.of<PostProvider>(context, listen: false).restorePost(currentDocId);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تمت استعادة الفيديو'), backgroundColor: Colors.teal));
-                          if (widget.allDocs.length == 1) Navigator.pop(context);
-                        }
-                      } finally {
-                        if (mounted) setState(() => _isRestoring = false);
-                      }
-                    },
-                    child: _isRestoring? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Text('استعادة', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.teal,
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    onPressed:
+                        _isRestoring ||
+                            _visible[_currentIndex]
+                                    .data()['trashPurgeStartedAt'] !=
+                                null
+                        ? null
+                        : _restoreCurrent,
+                    child: _isRestoring
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Text(
+                            'استعادة',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
                   ),
                 ),
               ),
