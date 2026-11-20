@@ -5,10 +5,13 @@ import 'system_notification_model.dart';
 class SystemNotificationsProvider extends ChangeNotifier {
   final List<SystemNotification> _items = [];
   bool weeklyEnabled = true;
+  final _pendingUsageNotifications = <String>{};
 
   List<SystemNotification> get all => _items;
-  List<SystemNotification> get updates => _items.where((e) => e.type == SystemNotifType.usage).toList();
-  List<SystemNotification> get reports => _items.where((e) => e.type == SystemNotifType.report).toList();
+  List<SystemNotification> get updates =>
+      _items.where((e) => e.type == SystemNotifType.usage).toList();
+  List<SystemNotification> get reports =>
+      _items.where((e) => e.type == SystemNotifType.report).toList();
 
   int get unreadCount => _items.where((e) => !e.isRead).length;
   SystemNotification? get last => _items.isNotEmpty ? _items.first : null;
@@ -21,36 +24,44 @@ class SystemNotificationsProvider extends ChangeNotifier {
     required int totalSeconds,
   }) async {
     if (!weeklyEnabled) return;
-    
+
     final now = DateTime.now();
-    
+
     if (now.weekday != DateTime.saturday) {
       debugPrint("اليوم مو سبت، ما رح نعمل اشعار");
       return;
     }
 
-    final prefs = await SharedPreferences.getInstance();
-    final lastDate = prefs.getString('last_weekly_report_date');
-    final todayStr = "${now.year}-${now.month}-${now.day}";
-
-    if (lastDate == todayStr) {
-      debugPrint("اشعار هالسبت انبعت قبل");
-      return;
+    final date = "${now.year}-${now.month}-${now.day}";
+    final request = 'weekly-$date';
+    if (!_pendingUsageNotifications.add(request)) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!weeklyEnabled ||
+          prefs.getString('last_weekly_report_date') == date) {
+        return;
+      }
+      if (!await prefs.setString('last_weekly_report_date', date)) {
+        throw StateError('Weekly usage reminder could not be recorded');
+      }
+      _items.insert(
+        0,
+        SystemNotification(
+          id: now.millisecondsSinceEpoch.toString(),
+          type: SystemNotifType.usage,
+          title: 'تقريرك الأسبوعي',
+          body:
+              'قضيت $hoursText خلال الأسبوع الماضي على Tini. حافظ على توازنك!',
+          time: now,
+          avgText: avgText,
+          percentText: percentText,
+          totalSeconds: totalSeconds,
+        ),
+      );
+      notifyListeners();
+    } finally {
+      _pendingUsageNotifications.remove(request);
     }
-
-    _items.insert(0, SystemNotification(
-      id: now.millisecondsSinceEpoch.toString(),
-      type: SystemNotifType.usage,
-      title: 'تقريرك الأسبوعي',
-      body: 'قضيت $hoursText هذا الأسبوع على Tini. حافظ على توازنك!',
-      time: now,
-      avgText: avgText,
-      percentText: percentText,
-      totalSeconds: totalSeconds,
-    ));
-
-    await prefs.setString('last_weekly_report_date', todayStr);
-    notifyListeners();
   }
 
   // للتوافق مع الكود القديم - ديناميك كمان
@@ -68,38 +79,59 @@ class SystemNotificationsProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> addDailyLimitReached({required int limitMinutes, required int usedSeconds}) async {
+  Future<void> addDailyLimitReached({
+    required int limitMinutes,
+    required int usedSeconds,
+    DateTime? usageDay,
+  }) async {
     final now = DateTime.now();
-    final prefs = await SharedPreferences.getInstance();
-    final todayKey = "${now.year}-${now.month}-${now.day}-daily-limit";
-    final last = prefs.getString('last_daily_limit_date');
-    if (last == todayKey) return;
+    final day = usageDay ?? now;
+    final key = "${day.year}-${day.month}-${day.day}-daily-limit";
+    final savedKey = 'titi_usage_notice_$key';
+    if (!_pendingUsageNotifications.add(key)) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool(savedKey) == true ||
+          prefs.getString('last_daily_limit_date') == key) {
+        return;
+      }
+      if (!await prefs.setBool(savedKey, true)) {
+        throw StateError('Daily usage reminder could not be recorded');
+      }
 
-    String format(int s) {
-      int h = s ~/ 3600;
-      int m = (s % 3600) ~/ 60;
-      if (h == 0) return "$m د";
-      if (m == 0) return "$h س";
-      return "$h س $m د";
+      final hours = usedSeconds ~/ 3600;
+      final minutes = usedSeconds ~/ 60 % 60;
+      final duration = hours == 0
+          ? '$minutes د'
+          : minutes == 0
+          ? '$hours س'
+          : '$hours س $minutes د';
+      final today =
+          day.year == now.year && day.month == now.month && day.day == now.day;
+      final when = today ? 'اليوم' : 'في ${day.day}/${day.month}/${day.year}';
+      _items.insert(
+        0,
+        SystemNotification(
+          id: now.millisecondsSinceEpoch.toString(),
+          type: SystemNotifType.usage,
+          title: 'تجاوزت الحد اليومي',
+          body: 'قضيت $duration $when والحد هو $limitMinutes دقيقة',
+          time: now,
+          avgText: "",
+          percentText: "",
+          totalSeconds: usedSeconds,
+        ),
+      );
+      notifyListeners();
+    } finally {
+      _pendingUsageNotifications.remove(key);
     }
-
-    _items.insert(0, SystemNotification(
-      id: now.millisecondsSinceEpoch.toString(),
-      type: SystemNotifType.usage,
-      title: 'تجاوزت الحد اليومي',
-      body: 'قضيت ${format(usedSeconds)} اليوم والحد هو $limitMinutes دقيقة',
-      time: now,
-      avgText: "",
-      percentText: "",
-      totalSeconds: usedSeconds,
-    ));
-
-    await prefs.setString('last_daily_limit_date', todayKey);
-    notifyListeners();
   }
 
   void markAllRead() {
-    for (var e in _items) e.isRead = true;
+    for (final item in _items) {
+      item.isRead = true;
+    }
     notifyListeners();
   }
 
