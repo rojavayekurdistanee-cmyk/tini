@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'system_notification_model.dart';
@@ -6,6 +8,85 @@ class SystemNotificationsProvider extends ChangeNotifier {
   final List<SystemNotification> _items = [];
   bool weeklyEnabled = true;
   final _pendingUsageNotifications = <String>{};
+
+  static const String _historyKey = 'tini_system_notifications_history_v1';
+  late final Future<void> _historyReady = _loadHistory();
+  Future<void> _saveTail = Future<void>.value();
+  bool _historyAvailable = false;
+  bool _disposed = false;
+
+  SystemNotificationsProvider() {
+    _historyReady;
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_historyKey);
+      if (raw != null) {
+        final decoded = jsonDecode(raw);
+        if (decoded is! List) {
+          throw const FormatException('Invalid system notifications history');
+        }
+        final restored = decoded.map((value) {
+          if (value is! Map<String, dynamic>) {
+            throw const FormatException('Invalid system notification');
+          }
+          return SystemNotification(
+            id: value['id'] as String,
+            type: SystemNotifType.values.byName(value['type'] as String),
+            title: value['title'] as String,
+            body: value['body'] as String,
+            time: DateTime.parse(value['time'] as String),
+            isRead: value['isRead'] as bool? ?? false,
+            avgText: value['avgText'] as String? ?? '',
+            percentText: value['percentText'] as String? ?? '',
+            totalSeconds: value['totalSeconds'] as int? ?? 0,
+          );
+        }).toList();
+        final existingIds = _items.map((item) => item.id).toSet();
+        _items.addAll(restored.where((item) => !existingIds.contains(item.id)));
+        _items.sort((a, b) => b.time.compareTo(a.time));
+      }
+      _historyAvailable = true;
+      if (!_disposed) notifyListeners();
+    } catch (error) {
+      // Do not overwrite a history that could not be decoded or loaded.
+      debugPrint('System notifications history load failed: $error');
+    }
+  }
+
+  Future<void> _saveHistory() async {
+    await _historyReady;
+    if (!_historyAvailable) return;
+    final snapshot = jsonEncode(_items.map((item) => {
+      'id': item.id,
+      'type': item.type.name,
+      'title': item.title,
+      'body': item.body,
+      'time': item.time.toIso8601String(),
+      'isRead': item.isRead,
+      'avgText': item.avgText,
+      'percentText': item.percentText,
+      'totalSeconds': item.totalSeconds,
+    }).toList());
+    final operation = _saveTail.then((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      if (!await prefs.setString(_historyKey, snapshot)) {
+        throw StateError('System notifications history could not be saved');
+      }
+    });
+    _saveTail = operation.catchError((Object error) {
+      debugPrint('System notifications history save failed: $error');
+    });
+    await operation;
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
 
   List<SystemNotification> get all => _items;
   List<SystemNotification> get updates =>
@@ -36,6 +117,7 @@ class SystemNotificationsProvider extends ChangeNotifier {
     final request = 'weekly-$date';
     if (!_pendingUsageNotifications.add(request)) return;
     try {
+      await _historyReady;
       final prefs = await SharedPreferences.getInstance();
       if (!weeklyEnabled ||
           prefs.getString('last_weekly_report_date') == date) {
@@ -59,6 +141,7 @@ class SystemNotificationsProvider extends ChangeNotifier {
         ),
       );
       notifyListeners();
+      await _saveHistory();
     } finally {
       _pendingUsageNotifications.remove(request);
     }
@@ -90,6 +173,7 @@ class SystemNotificationsProvider extends ChangeNotifier {
     final savedKey = 'titi_usage_notice_$key';
     if (!_pendingUsageNotifications.add(key)) return;
     try {
+      await _historyReady;
       final prefs = await SharedPreferences.getInstance();
       if (prefs.getBool(savedKey) == true ||
           prefs.getString('last_daily_limit_date') == key) {
@@ -123,6 +207,7 @@ class SystemNotificationsProvider extends ChangeNotifier {
         ),
       );
       notifyListeners();
+      await _saveHistory();
     } finally {
       _pendingUsageNotifications.remove(key);
     }
@@ -133,6 +218,9 @@ class SystemNotificationsProvider extends ChangeNotifier {
       item.isRead = true;
     }
     notifyListeners();
+    _saveHistory().catchError((Object error) {
+      debugPrint('System notifications read state save failed: $error');
+    });
   }
 
   void setWeeklyEnabled(bool v) {

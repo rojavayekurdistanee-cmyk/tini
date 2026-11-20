@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:timeago/timeago.dart' as timeago;
 import 'system_notifications_provider.dart';
 import 'system_notification_model.dart';
 import 'system_notification_detail_screen.dart';
@@ -12,6 +15,22 @@ class SystemNotificationsScreen extends StatefulWidget {
 
 class _SystemNotificationsScreenState extends State<SystemNotificationsScreen> {
   int selected = 0;
+  Timer? _timeRefreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    timeago.setLocaleMessages('ar', timeago.ArMessages());
+    _timeRefreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timeRefreshTimer?.cancel();
+    super.dispose();
+  }
 
   String _formatDuration(int totalSeconds) {
     final h = totalSeconds ~/ 3600;
@@ -106,6 +125,16 @@ class _SystemNotificationsScreenState extends State<SystemNotificationsScreen> {
                               Text(item.title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16, fontFamily: 'Tajawal'), textAlign: TextAlign.right),
                               const SizedBox(height: 6),
                               Text(item.body, style: const TextStyle(color: Colors.white60, fontSize: 13, fontFamily: 'Tajawal'), textAlign: TextAlign.right, maxLines: 2, overflow: TextOverflow.ellipsis),
+                              const SizedBox(height: 4),
+                              Text(
+                                timeago.format(item.time, locale: 'ar'),
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 11,
+                                  fontFamily: 'Tajawal',
+                                ),
+                                textAlign: TextAlign.right,
+                              ),
                               const SizedBox(height: 12),
                               const Align(
                                 alignment: Alignment.centerLeft,

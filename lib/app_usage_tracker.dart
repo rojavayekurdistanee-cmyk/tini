@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'system_notifications_provider.dart';
@@ -82,6 +85,10 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
   final _weeklyNotices = <String>{};
   late final Future<void> ready;
   SharedPreferences? _prefs;
+  File? _historyFile;
+  bool _primaryHistoryValid = false;
+  Timer? _saveRetry;
+  int _retrySeconds = 1;
   DateTime? _sessionAnchor;
   int _accountedMicroseconds = 0;
   Timer? _timer;
@@ -127,8 +134,42 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      Map<String, UsageDay>? saved;
+      var needsRecoveryWrite = false;
+      if (!kIsWeb) {
+        final directory = await getApplicationSupportDirectory();
+        final file = File('${directory.path}/tini_usage_history.json');
+        _historyFile = file;
+        final backup = File('${file.path}.bak');
+        if (await file.exists()) {
+          try {
+            saved = _readDays(prefs, await file.readAsString());
+            _primaryHistoryValid = true;
+          } catch (error) {
+            debugPrint('Primary usage history is invalid: $error');
+          }
+        }
+        if (saved == null && await backup.exists()) {
+          try {
+            saved = _readDays(prefs, await backup.readAsString());
+            needsRecoveryWrite = true;
+          } catch (error) {
+            debugPrint('Usage history backup is invalid: $error');
+          }
+        }
+        if (saved == null && await file.exists()) {
+          // Never silently replace a damaged history with empty data.
+          final legacy = prefs.getString(_storageKey);
+          if (legacy == null &&
+              !prefs.getKeys().any(
+                (key) => RegExp(r'^usage_\d{4}-\d{2}-\d{2}$').hasMatch(key),
+              )) {
+            throw StateError('No valid usage history or backup is available');
+          }
+        }
+      }
       if (_disposed) return;
-      final saved = _readDays(prefs);
+      saved ??= _readDays(prefs, prefs.getString(_storageKey));
       for (final entry in saved.entries) {
         _days.update(
           entry.key,
@@ -142,7 +183,7 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
       _limitMinutes = prefs.getInt('titi_daily_limit_minutes') ?? 60;
       _prefs = prefs;
       _notifications.setWeeklyEnabled(_weeklyEnabled);
-      _dirty = true;
+      _dirty = _dirty || needsRecoveryWrite || !_primaryHistoryValid;
     } catch (error) {
       _loadFailed = true;
       debugPrint('Usage history initialization failed: $error');
@@ -156,8 +197,7 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Map<String, UsageDay> _readDays(SharedPreferences prefs) {
-    final stored = prefs.getString(_storageKey);
+  Map<String, UsageDay> _readDays(SharedPreferences prefs, String? stored) {
     if (stored != null) {
       final data = jsonDecode(stored) as Map<String, dynamic>;
       final days = data['days'] as Map<String, dynamic>;
@@ -245,6 +285,8 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
 
   void _flush() {
     if (_saving || !_dirty || _prefs == null) return;
+    _saveRetry?.cancel();
+    _saveRetry = null;
     _saving = true;
     unawaited(_write());
   }
@@ -257,13 +299,34 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
           'measuredFrom': _measuredFrom,
           'days': _days.map((key, day) => MapEntry(key, day.toJson())),
         });
-        if (!await _prefs!.setString(_storageKey, value)) {
+        final file = _historyFile;
+        if (file != null) {
+          // Keep the last valid snapshot as a recoverable backup.
+          // A corrupt primary must never overwrite a good backup.
+          if (_primaryHistoryValid && await file.exists()) {
+            final backup = File('${file.path}.bak');
+            final backupStaging = File('${backup.path}.tmp');
+            await file.copy(backupStaging.path);
+            if (await backup.exists()) await backup.delete();
+            await backupStaging.rename(backup.path);
+          }
+          final staging = File('${file.path}.tmp');
+          await staging.writeAsString(value, flush: true);
+          await staging.rename(file.path);
+          _primaryHistoryValid = true;
+        } else if (!await _prefs!.setString(_storageKey, value)) {
           throw StateError('Usage history was not saved');
         }
+        _retrySeconds = 1;
       }
     } catch (error) {
       _dirty = true;
       debugPrint('Usage history save failed: $error');
+      if (_prefs != null) {
+        // Continue a pending save even if the widget/provider was disposed.
+        _saveRetry = Timer(Duration(seconds: _retrySeconds), _flush);
+        _retrySeconds = (_retrySeconds * 2).clamp(1, 10);
+      }
     } finally {
       _saving = false;
     }
@@ -388,6 +451,9 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _disposed = true;
     _pause();
+    // _pause checkpoints the final interval. Keep pending writes/retries alive
+    // until they succeed, rather than cancelling them during disposal.
+    _flush();
     super.dispose();
   }
 }
