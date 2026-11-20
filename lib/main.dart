@@ -20,6 +20,7 @@ import 'app_colors.dart'; // [تأكيد]: استيراد ملف الألوان 
 import 'search_provider.dart'; // تم الإضافة: استيراد مزود البحث
 import 'story_provider.dart'; // تم الإضافة: استيراد مزود الستوري
 import 'wallet_provider.dart' hide navigatorKey; // تم الإضافة: استيراد مزود المحفظة
+import 'app_usage_tracker.dart';
 import 'system_notifications_provider.dart';
 import 'notification_service.dart'; // <<< حط هاد هون
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -137,6 +138,12 @@ void main() async {
         ),
         ChangeNotifierProvider(
           create: (_) => SystemNotificationsProvider(), // <-- جديد إشعارات النظام
+        ),
+        ChangeNotifierProvider(
+          lazy: false,
+          create: (context) => AppUsageTracker(
+            context.read<SystemNotificationsProvider>(),
+          )..start(),
         ),
       ],
       child: const TitiApp(),
