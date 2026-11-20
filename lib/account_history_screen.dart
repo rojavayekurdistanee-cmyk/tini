@@ -32,7 +32,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   final _auth = FirebaseAuth.instance;
   final _store = FirebaseFirestore.instance;
   final _scrollController = ScrollController();
-  final _logs = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+  final _logs = <String, DocumentSnapshot<Map<String, dynamic>>>{};
   StreamSubscription<User?>? _authSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _recentSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _tailSub;
@@ -44,6 +44,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   bool _loading = true;
   bool _hasMore = false;
   bool _failed = false;
+  final _liveTokens = <_LiveWindow, Object>{};
   final _liveRetries = <_LiveWindow, VoidCallback>{};
   bool _loadingUndated = false;
   bool _hasUndatedPages = false;
@@ -89,6 +90,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
       _loading = false;
       _hasMore = _uid != null;
       _failed = false;
+      _liveTokens.clear();
       _liveRetries.clear();
       _loadingUndated = false;
       _hasUndatedPages = _uid != null;
@@ -170,7 +172,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
         final visible = boundary == null
             ? snapshot.docs.take(_pageSize)
             : snapshot.docs;
-        _mergeLiveRows(liveIds, visible);
+        _mergeLiveRows(uid, generation, liveIds, visible, snapshot.docs);
         if (boundary == null) {
           _cursor = visible.isEmpty ? null : visible.last;
           _hasMore = snapshot.docs.length > _pageSize;
@@ -192,26 +194,36 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   ) {
     final tail = _datedHistory(uid).startAfterDocument(cursor);
     _watchLive(tail, uid, generation, _LiveWindow.tail, (snapshot) {
-      _mergeLiveRows(liveIds, snapshot.docs);
+      _mergeLiveRows(uid, generation, liveIds, snapshot.docs, snapshot.docs);
     });
   }
 
-  void _watchLive(
+  Future<void> _watchLive(
     Query<Map<String, dynamic>> query,
     String uid,
     int generation,
     _LiveWindow window,
     void Function(QuerySnapshot<Map<String, dynamic>>) apply, {
     VoidCallback? afterSnapshot,
-  }) {
+  }) async {
     if (!_current(uid, generation)) return;
+    final token = Object();
+    _liveTokens[window] = token;
+    bool isActive() =>
+        _current(uid, generation) && identical(_liveTokens[window], token);
+
     final previous = window == _LiveWindow.first ? _recentSub : _tailSub;
-    unawaited(previous?.cancel());
+    try {
+      await previous?.cancel().timeout(const Duration(seconds: 2));
+    } catch (error) {
+      debugPrint('Login history listener cancellation failed: $error');
+    }
+    if (!isActive()) return;
     final subscription = query
         .snapshots(includeMetadataChanges: true)
         .listen(
           (snapshot) {
-            if (!_current(uid, generation) ||
+            if (!isActive() ||
                 snapshot.metadata.isFromCache ||
                 snapshot.metadata.hasPendingWrites) {
               return;
@@ -223,7 +235,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
             afterSnapshot?.call();
           },
           onError: (Object error) {
-            if (!_current(uid, generation)) return;
+            if (!isActive()) return;
             debugPrint('Login history live update failed: $error');
             setState(() {
               _liveRetries[window] = () => _watchLive(
@@ -252,19 +264,50 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   }
 
   void _mergeLiveRows(
+    String uid,
+    int generation,
     Set<String> liveIds,
     Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> visible,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> returned,
   ) {
-    final ids = visible.map((doc) => doc.id).toSet();
-    for (final id in liveIds.difference(ids)) {
-      _logs.remove(id);
+    final returnedIds = returned.map((doc) => doc.id).toSet();
+    for (final id in liveIds.difference(returnedIds)) {
+      final previous = _logs[id];
+      if (previous != null)
+        unawaited(_reconcileLiveExit(uid, generation, previous));
     }
+    liveIds.clear();
     for (final doc in visible) {
       _logs[doc.id] = doc;
+      liveIds.add(doc.id);
     }
-    liveIds
-      ..clear()
-      ..addAll(ids);
+  }
+
+  Future<void> _reconcileLiveExit(
+    String uid,
+    int generation,
+    DocumentSnapshot<Map<String, dynamic>> previous,
+  ) async {
+    try {
+      final current = await previous.reference.get(_server).timeout(_deadline);
+      if (!_current(uid, generation) ||
+          !identical(_logs[previous.id], previous) ||
+          current.metadata.isFromCache ||
+          current.metadata.hasPendingWrites) {
+        return;
+      }
+      // A query exit can be a change of sort position; confirm the document
+      // still exists and leave newer snapshots in charge of the visible row.
+      setState(() {
+        if (current.exists) {
+          _logs[previous.id] = current;
+        } else {
+          _logs.remove(previous.id);
+        }
+      });
+    } catch (error) {
+      debugPrint('Login history row verification failed: $error');
+    }
   }
 
   Future<void> _fetchUndated() async {
@@ -372,8 +415,8 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     );
   }
 
-  Timestamp? _timestamp(Map<String, dynamic> data) {
-    final value = data['timestamp'];
+  Timestamp? _timestamp(Map<String, dynamic>? data) {
+    final value = data?['timestamp'];
     return value is Timestamp ? value : null;
   }
 
@@ -443,7 +486,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     final uid = _uid;
     final docs = uid != null && uid == _auth.currentUser?.uid
         ? _logs.values.toList()
-        : <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        : <DocumentSnapshot<Map<String, dynamic>>>[];
     docs.sort((a, b) {
       final left = _timestamp(a.data());
       final right = _timestamp(b.data());
@@ -453,8 +496,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
       final order = time == 0 ? a.id.compareTo(b.id) : time;
       return _newestFirst ? -order : order;
     });
-    final grouped =
-        <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    final grouped = <String, List<DocumentSnapshot<Map<String, dynamic>>>>{};
     for (final doc in docs) {
       final stamp = _timestamp(doc.data());
       final label = stamp == null ? 'تاريخ غير معروف' : _getDateKey(stamp);
@@ -577,7 +619,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
                       itemCount: group.value.length,
                       itemBuilder: (_, index) {
                         final entry = group.value[index];
-                        final data = entry.data();
+                        final data = entry.data() ?? const <String, dynamic>{};
                         final name = _text(data['deviceName']);
                         final legacyDevice = _text(data['device']);
                         final device = name.isNotEmpty ? name : legacyDevice;
