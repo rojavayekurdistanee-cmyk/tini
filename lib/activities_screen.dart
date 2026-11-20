@@ -88,7 +88,7 @@ class ActivitiesScreen extends StatelessWidget {
             _buildActivityTile(Iconsax.user_tag, "سجل الذكر", onTap: () {
             Navigator.push(context, MaterialPageRoute(builder: (_) => const TagDuetHistoryScreen()));
             }),
-            _buildActivityTile(Iconsax.user_edit, "تحديثات الحساب", onTap: () {
+            _buildActivityTile(Iconsax.user_edit, "سجل الحساب", onTap: () {
             Navigator.push(context, MaterialPageRoute(builder: (_) => const AccountHistoryScreen()));
 }),
           ]),
