@@ -1620,16 +1620,32 @@ const s3 = new S3Client({
 function trashObjectKey(value, uid) {
     const url = new URL(value);
     const hosts = new Set(['pub-e602981c5b0b476c92bdec7ba140e7de.r2.dev']);
-    if (process.env.R2_PUBLIC_URL) hosts.add(new URL(process.env.R2_PUBLIC_URL).host);
-    if (url.protocol !== 'https:' || !hosts.has(url.host)) {
-        throw new Error('Trash asset URL is outside the configured R2 host');
+    for (const origin of [process.env.R2_PUBLIC_URL,
+        ...(process.env.R2_LEGACY_PUBLIC_URLS || '').split(',')].filter(value => value?.trim())) {
+        hosts.add(new URL(origin.trim()).host);
     }
-    const key = decodeURIComponent(url.pathname.slice(1));
-    const ownsRaw = key.startsWith(`raw_videos/${uid}_`) &&
-        /^\d+_[A-Z0-9]{8}\.mp4$/.test(key.slice(`raw_videos/${uid}_`.length));
-    const ownsAsset = [`videos/${uid}/`, `thumbnails/${uid}/`]
+    if (url.protocol !== 'https:') throw new Error('Invalid trash asset protocol');
+    let key = decodeURIComponent(url.pathname.slice(1));
+    const bucket = process.env.R2_BUCKET_NAME;
+    if (process.env.R2_ACCOUNT_ID &&
+        url.host === `${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`) {
+        if (!bucket || !key.startsWith(`${bucket}/`)) {
+            throw new Error('Trash asset is outside the configured R2 bucket');
+        }
+        key = key.slice(bucket.length + 1);
+    } else if (!hosts.has(url.host)) {
+        throw new Error('Trash asset URL is outside the configured R2 hosts');
+    }
+
+    const ownsFolder = [`videos/${uid}/`, `raw_videos/${uid}/`, `thumbnails/${uid}/`]
         .some(prefix => key.startsWith(prefix) && key.length > prefix.length);
-    if ((!ownsRaw && !ownsAsset) || key.split('/').some(part => part === '..' || part === '.')) {
+    const ownsFlatVideo = [`raw_videos/${uid}_`, `videos/${uid}_`]
+        .some(prefix => key.startsWith(prefix) && /^\d+_[A-Z0-9]{8}\.mp4$/i.test(key.slice(prefix.length)));
+    const thumbPrefix = `thumbnails/${uid}_`;
+    const ownsFlatThumb = key.startsWith(thumbPrefix) &&
+        /^(?:thumb_)?\d+_[A-Z0-9]{8}\.(webp|jpe?g|png)$/i.test(key.slice(thumbPrefix.length));
+    if ((!ownsFolder && !ownsFlatVideo && !ownsFlatThumb) ||
+        key.split('/').some(part => part === '..' || part === '.') || key.includes('\\')) {
         throw new Error('Trash asset key does not match the post owner');
     }
     return key;
@@ -1676,20 +1692,27 @@ exports.cleanupDeletedPosts = onSchedule({
     memory: "512MiB"
 }, async () => {
     const now = new Date();
-    const snap = await db.collection('posts')
+    const eligible = db.collection('posts')
         .where('isDeleted', '==', true)
         .where('expireAt', '<=', now)
-        .limit(200)
-        .get();
-
+        .orderBy('expireAt')
+        .limit(200);
+    const deadline = now.getTime() + 8 * 60 * 1000;
+    let cursor;
     let deleted = 0;
-    for (const doc of snap.docs) {
-        try {
-            if (await purgeExpiredPost(doc.ref, now)) deleted++;
-        } catch (error) {
-            // Keep the post for the next scheduled retry if any asset fails.
-            console.error(`[Trash] Cleanup failed for ${doc.id}:`, error.message);
+    while (Date.now() < deadline) {
+        const page = await (cursor ? eligible.startAfter(cursor) : eligible).get();
+        for (const doc of page.docs) {
+            if (Date.now() >= deadline) break;
+            try {
+                if (await purgeExpiredPost(doc.ref, new Date())) deleted++;
+            } catch (error) {
+                // Keep unverified assets and failed deletions for review or retry.
+                console.error(`[Trash] Cleanup failed for ${doc.id}:`, error.message);
+            }
         }
+        if (page.size < 200) break;
+        cursor = page.docs[page.size - 1];
     }
     console.log(`[Trash] Deleted ${deleted} expired posts`);
     return null;

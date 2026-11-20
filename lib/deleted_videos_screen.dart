@@ -138,6 +138,18 @@ class _DeletedVideosScreenState extends State<DeletedVideosScreen> {
     _docs.value = unique.values.toList();
   }
 
+  int _newestFirst(_TrashDoc left, _TrashDoc right) {
+    final a = left.data()['deletedAt'];
+    final b = right.data()['deletedAt'];
+    if (a is Timestamp && b is Timestamp) {
+      final dateOrder = b.compareTo(a);
+      if (dateOrder != 0) return dateOrder;
+    } else if (a is Timestamp || b is Timestamp) {
+      return a is Timestamp ? -1 : 1;
+    }
+    return right.id.compareTo(left.id);
+  }
+
   Future<void> _fetchMore() async {
     final uid = _uid;
     final generation = _generation;
@@ -206,24 +218,36 @@ class _DeletedVideosScreenState extends State<DeletedVideosScreen> {
                 result.metadata.isFromCache ||
                 result.metadata.hasPendingWrites)
               return;
-            final visible = end == null
-                ? result.docs.take(_pageSize).toList()
-                : result.docs;
+            final lastWindow = index == _pages.length - 1;
+            if (end == null && lastWindow && result.docs.length > _pageSize) {
+              // A limited snapshot can evict a still-deleted video. Extend
+              // the fixed range through the previous oldest visible row.
+              final merged = <String, _TrashDoc>{
+                for (final entry in _pages[index]) entry.id: entry,
+                for (final entry in result.docs.take(_pageSize))
+                  entry.id: entry,
+              };
+              final expanded = merged.values.toList()..sort(_newestFirst);
+              final boundary = expanded.last;
+              setState(() {
+                _failedWatches.remove(index);
+                _pages[index] = expanded;
+                _hasMore = true;
+                _cursor = boundary;
+                _publish();
+              });
+              unawaited(_watchPage(uid, generation, index, query, boundary));
+              return;
+            }
             setState(() {
               _failedWatches.remove(index);
-              _pages[index] = visible;
-              if (end == null && !_loading && index == _pages.length - 1) {
-                _hasMore = result.docs.length > _pageSize;
-                if (visible.isNotEmpty) _cursor = visible.last;
+              _pages[index] = result.docs;
+              if (end == null && !_loading && lastWindow) {
+                _hasMore = false;
+                if (result.docs.isNotEmpty) _cursor = result.docs.last;
               }
               _publish();
             });
-            if (end == null &&
-                index == _pages.length - 1 &&
-                _hasMore &&
-                visible.isNotEmpty) {
-              _watchPage(uid, generation, index, query, visible.last);
-            }
           },
           onError: (Object error) {
             if (!active()) return;
@@ -576,15 +600,17 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
         : current >= 0
         ? current
         : oldIndex.clamp(0, next.length - 1).toInt();
+    final selected = next.isEmpty ? null : next[nextIndex];
+    final needsPlayback =
+        selected != null &&
+        (previous == null ||
+            lostCurrent ||
+            previous.data()['trashPurgeStartedAt'] !=
+                selected.data()['trashPurgeStartedAt'] ||
+            _getBestUrl(previous.data()) != _getBestUrl(selected.data()));
     if (!_adjustingPage && !lostCurrent && nextIndex == oldIndex) {
       setState(() => _visible = next);
-      if (next.isEmpty) return;
-      if (previous == null ||
-          previous.data()['trashPurgeStartedAt'] !=
-              next[nextIndex].data()['trashPurgeStartedAt'] ||
-          _getBestUrl(previous.data()) != _getBestUrl(next[nextIndex].data())) {
-        _playCurrent();
-      }
+      if (needsPlayback) _playCurrent();
       return;
     }
     if (lostCurrent) _stoppingPlayback = TitiProfileEngine().stop();
@@ -601,6 +627,7 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
         return;
       }
       if (_pageController.hasClients) _pageController.jumpToPage(_currentIndex);
+      final wasStopping = _stoppingPlayback != null;
       if (_stoppingPlayback case final stop?) {
         await stop;
         if (!mounted || revision != _selectionRevision || _sessionChanged)
@@ -611,7 +638,7 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
         _stoppingPlayback = null;
       }
       _adjustingPage = false;
-      _playCurrent();
+      if (needsPlayback || wasStopping) _playCurrent();
       _loadNearEnd();
     });
   }
@@ -674,7 +701,8 @@ class _DeletedVideoPreviewScreenState extends State<DeletedVideoPreviewScreen> {
     if (ModalRoute.of(context)?.isCurrent != true || _visible.isEmpty) return;
     final data = _visible[_currentIndex].data();
     final url = _getBestUrl(data);
-    if (_adjustingPage || url.isEmpty) {
+    if (_adjustingPage) return;
+    if (url.isEmpty) {
       unawaited(TitiProfileEngine().pause());
       return;
     }
