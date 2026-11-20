@@ -44,6 +44,10 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
   bool _loading = true;
   bool _hasMore = false;
   bool _failed = false;
+  final _pendingExits = <String, DocumentSnapshot<Map<String, dynamic>>>{};
+  Timer? _exitCheckTimer;
+  bool _checkingExits = false;
+  int _exitFailures = 0;
   final _liveTokens = <_LiveWindow, Object>{};
   final _liveRetries = <_LiveWindow, VoidCallback>{};
   bool _loadingUndated = false;
@@ -91,6 +95,11 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
       _hasMore = _uid != null;
       _failed = false;
       _liveTokens.clear();
+      _exitCheckTimer?.cancel();
+      _exitCheckTimer = null;
+      _pendingExits.clear();
+      _checkingExits = false;
+      _exitFailures = 0;
       _liveRetries.clear();
       _loadingUndated = false;
       _hasUndatedPages = _uid != null;
@@ -271,42 +280,79 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     List<QueryDocumentSnapshot<Map<String, dynamic>>> returned,
   ) {
     final returnedIds = returned.map((doc) => doc.id).toSet();
+    for (final id in returnedIds) {
+      _pendingExits.remove(id);
+    }
     for (final id in liveIds.difference(returnedIds)) {
       final previous = _logs[id];
-      if (previous != null)
-        unawaited(_reconcileLiveExit(uid, generation, previous));
+      if (previous != null) _pendingExits[id] = previous;
     }
     liveIds.clear();
     for (final doc in visible) {
       _logs[doc.id] = doc;
       liveIds.add(doc.id);
     }
+    if (_exitFailures >= 3) _exitFailures = 0;
+    _scheduleExitCheck(uid, generation);
   }
 
-  Future<void> _reconcileLiveExit(
-    String uid,
-    int generation,
-    DocumentSnapshot<Map<String, dynamic>> previous,
-  ) async {
+  void _scheduleExitCheck(String uid, int generation) {
+    if (!_current(uid, generation) ||
+        _pendingExits.isEmpty ||
+        _exitCheckTimer != null ||
+        _checkingExits ||
+        _exitFailures >= 3) {
+      return;
+    }
+    final delay = _exitFailures == 0
+        ? const Duration(milliseconds: 150)
+        : Duration(seconds: 1 << _exitFailures);
+    _exitCheckTimer = Timer(delay, () {
+      _exitCheckTimer = null;
+      unawaited(_checkLiveExits(uid, generation));
+    });
+  }
+
+  Future<void> _checkLiveExits(String uid, int generation) async {
+    if (!_current(uid, generation) || _pendingExits.isEmpty) return;
+    _checkingExits = true;
+    final batch = _pendingExits.entries.take(_pageSize).toList();
     try {
-      final current = await previous.reference.get(_server).timeout(_deadline);
-      if (!_current(uid, generation) ||
-          !identical(_logs[previous.id], previous) ||
-          current.metadata.isFromCache ||
-          current.metadata.hasPendingWrites) {
-        return;
+      final result = await _history(uid)
+          .where(
+            FieldPath.documentId,
+            whereIn: batch.map((entry) => entry.key).toList(),
+          )
+          .get(_server)
+          .timeout(_deadline);
+      if (!_current(uid, generation)) return;
+      if (result.metadata.isFromCache || result.metadata.hasPendingWrites) {
+        throw StateError('Login history verification is not server-confirmed');
       }
-      // A query exit can be a change of sort position; confirm the document
-      // still exists and leave newer snapshots in charge of the visible row.
+      final confirmed = {for (final doc in result.docs) doc.id: doc};
       setState(() {
-        if (current.exists) {
-          _logs[previous.id] = current;
-        } else {
-          _logs.remove(previous.id);
+        for (final entry in batch) {
+          if (!identical(_pendingExits[entry.key], entry.value)) continue;
+          _pendingExits.remove(entry.key);
+          if (!identical(_logs[entry.key], entry.value)) continue;
+          final doc = confirmed[entry.key];
+          if (doc == null) {
+            _logs.remove(entry.key);
+          } else {
+            _logs[entry.key] = doc;
+          }
         }
       });
+      _exitFailures = 0;
     } catch (error) {
+      if (!_current(uid, generation)) return;
+      _exitFailures++;
       debugPrint('Login history row verification failed: $error');
+    } finally {
+      if (_current(uid, generation)) {
+        _checkingExits = false;
+        _scheduleExitCheck(uid, generation);
+      }
     }
   }
 
@@ -477,6 +523,7 @@ class _AccountHistoryScreenState extends State<AccountHistoryScreen> {
     _authSub?.cancel();
     _recentSub?.cancel();
     _tailSub?.cancel();
+    _exitCheckTimer?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
