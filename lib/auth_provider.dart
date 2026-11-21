@@ -1692,7 +1692,8 @@ try {
 
   // نسخة صارمة لمسارات تغيير كلمة السر: لا تبتلع أخطاء التخزين المحلي.
   Future<void> savePasswordToVaultStrict(String uid, String password) async {
-    await _secureStorage.write(key: 'auth_pass_$uid', value: password.trim());
+    // نحفظ النص كما أدخله المستخدم؛ trim قد يغيّر كلمة السر الفعلية في Firebase.
+    await _secureStorage.write(key: 'auth_pass_$uid', value: password);
   }
   // [Tini - Live Sync Engine]
   StreamSubscription<DocumentSnapshot>? _counterSubscription;
