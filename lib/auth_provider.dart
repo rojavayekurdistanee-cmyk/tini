@@ -1286,6 +1286,99 @@ try {
 
     }
   }
+
+  // مزامنة وسائل الدخول من Firebase بوصفها المصدر الفعلي للحساب.
+  // تُستخدم بعد unlink وعند فتح تفاصيل الحساب لإصلاح أي اختلاف سابق.
+  Future<void> syncAccountProvidersFromFirebase() async {
+    final initialUser = FirebaseAuth.instance.currentUser;
+    if (initialUser == null) return;
+    final uid = initialUser.uid;
+
+    await initialUser.reload();
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.uid != uid) {
+      throw StateError("تغير الحساب أثناء مزامنة وسائل الدخول");
+    }
+
+    final providers = user.providerData
+        .where((provider) => provider.providerId != 'firebase')
+        .toList();
+    final providerIds = providers.map((provider) => provider.providerId).toSet();
+    if (providerIds.isEmpty) {
+      throw StateError("لم يتم العثور على وسيلة دخول مرتبطة بالحساب");
+    }
+
+    final passwordProviders = providers.where((p) => p.providerId == 'password').toList();
+    final googleProviders = providers.where((p) => p.providerId == 'google.com').toList();
+    final phoneProviders = providers.where((p) => p.providerId == 'phone').toList();
+    final hasPassword = passwordProviders.isNotEmpty;
+    final hasGoogle = googleProviders.isNotEmpty;
+    final hasPhone = phoneProviders.isNotEmpty;
+
+    final email = (hasPassword ? passwordProviders.first.email : null) ??
+        (hasGoogle ? googleProviders.first.email : null) ??
+        user.email;
+    final googleEmail = hasGoogle ? googleProviders.first.email : null;
+    final phoneNumber = (hasPhone ? phoneProviders.first.phoneNumber : null) ?? user.phoneNumber;
+    final loginType = hasGoogle ? 'google' : (hasPhone ? 'phone' : 'email');
+    final normalizedProviders = providerIds.toList()..sort();
+
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    final snapshot = await userRef.get();
+    final data = snapshot.data() ?? <String, dynamic>{};
+    final updates = <String, dynamic>{};
+
+    void syncField(String key, dynamic value) {
+      if (value == null || (value is String && value.isEmpty)) {
+        if (data.containsKey(key)) updates[key] = FieldValue.delete();
+      } else {
+        final existing = data[key];
+        final bool same = value is List && existing is List
+            ? existing.length == value.length &&
+                List.generate(value.length, (index) => existing[index] == value[index]).every((match) => match)
+            : existing == value;
+        if (!same) updates[key] = value;
+      }
+    }
+
+    syncField('email', email);
+    syncField('email_lowercase', email?.toLowerCase());
+    syncField('phoneNumber', hasPhone ? phoneNumber : null);
+    syncField('phone', hasPhone ? phoneNumber : null);
+    syncField('googleEmail', googleEmail);
+    syncField('isGoogleLinked', hasGoogle);
+    syncField('authMethod', loginType);
+    syncField('authProviders', normalizedProviders);
+    syncField('emailVerified', hasPassword ? user.emailVerified : null);
+
+    final pendingEmail = data['pendingEmail'];
+    if (user.emailVerified && pendingEmail is String && pendingEmail.isNotEmpty &&
+        email != null && pendingEmail.toLowerCase() == email.toLowerCase()) {
+      updates['pendingEmail'] = FieldValue.delete();
+      updates['pendingEmailRequestedAt'] = FieldValue.delete();
+    }
+
+    if (updates.isNotEmpty) {
+      await userRef.set(updates, SetOptions(merge: true));
+    }
+
+    // لا نترك نوع دخول قديماً أو بيانات لمزوّد تم إلغاء ربطه.
+    await _secureStorage.write(key: 'auth_type_$uid', value: loginType);
+    if (hasPhone && phoneNumber != null && phoneNumber.isNotEmpty) {
+      await _secureStorage.write(key: 'auth_phone_$uid', value: phoneNumber);
+    } else {
+      await _secureStorage.delete(key: 'auth_phone_$uid');
+    }
+    if (!hasPassword) {
+      await _secureStorage.delete(key: 'auth_pass_$uid');
+    }
+
+    _email = email ?? '';
+    _phoneNumber = hasPhone ? (phoneNumber ?? '') : '';
+    _authType = loginType;
+    await _saveAccountLocally();
+    notifyListeners();
+  }
   // [PASSKEY V5 - عبر PasskeyService يلي انت انشأتو]
   Future<void> loadPasskeyStatus() async {
     _passkeyEnabled = await PasskeyService.isEnabledLocal();
@@ -1426,6 +1519,11 @@ try {
     } catch (_) {
 
     }
+  }
+
+  // نسخة صارمة لمسارات تغيير كلمة السر: لا تبتلع أخطاء التخزين المحلي.
+  Future<void> savePasswordToVaultStrict(String uid, String password) async {
+    await _secureStorage.write(key: 'auth_pass_$uid', value: password.trim());
   }
   // [Tini - Live Sync Engine]
   StreamSubscription<DocumentSnapshot>? _counterSubscription;
