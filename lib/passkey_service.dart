@@ -80,11 +80,14 @@ class PasskeyService {
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
         'passkeyEnabled': true,
       }, SetOptions(merge: true));
+      if (FirebaseAuth.instance.currentUser?.uid != uid) {
+        throw StateError('تغير الحساب أثناء تفعيل الدخول السريع');
+      }
       if (!alreadyEnabled) {
         list.add(uid);
         await _saveEnabledUids(list);
       }
-      return FirebaseAuth.instance.currentUser?.uid == uid;
+      return true;
     } catch (_) {
       if (!alreadyEnabled) {
         list.remove(uid);
