@@ -92,15 +92,20 @@ class RemoveInfoScreen extends StatelessWidget {
                         }
 
                         try {
-                          await user.unlink(providerId);
+                          final unlinkResult = await user.unlink(providerId);
+                          final unlinkedUser = unlinkResult.user;
                           final currentUser = FirebaseAuth.instance.currentUser;
-                          if (currentUser == null || currentUser.uid != user.uid) {
+                          if (currentUser == null || currentUser.uid != user.uid ||
+                              (unlinkedUser != null && unlinkedUser.uid != user.uid)) {
                             throw StateError("تغير الحساب أثناء إلغاء الربط");
                           }
-                          await currentUser.reload();
-                          final refreshedUser = FirebaseAuth.instance.currentUser;
+                          // فشل reload لا يلغي نجاح unlink؛ نستخدم حالة المستخدم التي أعادها Firebase.
+                          try {
+                            await currentUser.reload();
+                          } catch (_) {}
+                          final refreshedUser = FirebaseAuth.instance.currentUser ?? unlinkedUser;
                           if (refreshedUser == null || refreshedUser.uid != user.uid) {
-                            throw StateError("تعذر تأكيد الحساب بعد إلغاء الربط");
+                            throw StateError("تعذر قراءة الحساب بعد إلغاء الربط");
                           }
                           final remainingProviders = refreshedUser.providerData
                               .map((provider) => provider.providerId)
