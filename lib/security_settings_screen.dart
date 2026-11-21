@@ -129,16 +129,22 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
       final result = await auth.inspectAndRepairCurrentVault();
       final repaired = result['repaired'] == true;
       final passwordMissing = result['passwordMissing'] == true;
+      final passwordStored = result['passwordStored'] == true;
+      final hasPassword = result['hasPassword'] == true;
 
       String message;
       if (passwordMissing) {
         message = repaired
             ? 'تم إصلاح بيانات الدخول المتاحة، لكن كلمة السر غير موجودة بالخزنة ولا يمكن استعادتها تلقائياً.'
             : 'تم فحص الخزنة. كلمة السر غير موجودة فيها، ولا يمكن استعادتها تلقائياً.';
+      } else if (hasPassword && passwordStored) {
+        message = repaired
+            ? 'تم إصلاح نوع الدخول ومعلومات الاتصال. حافظنا على كلمة السر الموجودة دون تغيير، لكن لا يمكن تأكيد صحتها دون إعادة المصادقة.'
+            : 'تم فحص نوع الدخول ومعلومات الاتصال. كلمة السر الموجودة بالخزنة لم نغيّرها، ولا يمكن تأكيد صحتها دون إعادة المصادقة.';
       } else if (repaired) {
         message = 'تم إصلاح بيانات الخزنة ومزامنتها مع وسيلة الدخول الحالية.';
       } else {
-        message = 'تم التحقق: بيانات الخزنة متطابقة مع حساب Firebase.';
+        message = 'تم التحقق من بيانات الدخول ومعلومات الاتصال لهذا الحساب.';
       }
 
       if (mounted) {
