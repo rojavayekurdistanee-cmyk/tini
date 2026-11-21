@@ -40,7 +40,14 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
       await FirebaseAuth.instance.currentUser?.reload();
     } catch (_) {}
     if (!mounted) return;
-    await context.read<custom.AuthProvider>().fetchUserData();
+    final auth = context.read<custom.AuthProvider>();
+    // محاولة تصحيح أي اختلاف سابق بين وسائل Firebase وبيانات Firestore.
+    try {
+      await auth.syncAccountLoginMethodsFromFirebase();
+    } catch (_) {
+      // تبقى Firebase هي مصدر العرض؛ ستُعاد المحاولة عند فتح الشاشة أو تحديثها.
+    }
+    await auth.fetchUserData();
     if (mounted) setState(() {});
   }
 
@@ -84,6 +91,8 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
           final String googleEmail = (googleList != null && googleList.isNotEmpty) ? (googleList.first.email ?? "") : "";
           final passwordList = currentUser?.providerData.where((p) => p.providerId == 'password').toList();
           final String passwordEmail = (passwordList != null && passwordList.isNotEmpty) ? (passwordList.first.email ?? "") : "";
+          final String actualEmail = currentUser?.email ?? passwordEmail;
+          final bool emailNeedsVerification = hasPassword && (currentUser?.emailVerified == false);
           final phoneList = currentUser?.providerData.where((p) => p.providerId == 'phone').toList();
           final String phoneFromProvider = (phoneList != null && phoneList.isNotEmpty) ? (phoneList.first.phoneNumber ?? "") : "";
 
@@ -105,8 +114,8 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
                     context,
                     Iconsax.sms, 
                     "البريد الإلكتروني", 
-                    hasPassword ? (passwordEmail.isEmpty ? (auth.email.isEmpty ? "غير مرتبط" : auth.email) : passwordEmail) : "غير مرتبط",
-                    () => _showActionSheet(context, "البريد الإلكتروني", Iconsax.sms, hasPassword ? (passwordEmail.isEmpty ? auth.email : passwordEmail) : "", isPhone: false),
+                    hasPassword ? "${actualEmail.isEmpty ? "مرتبط" : actualEmail}${emailNeedsVerification ? " (بانتظار التأكيد)" : ""}" : "غير مرتبط",
+                    () => _showActionSheet(context, "البريد الإلكتروني", Iconsax.sms, hasPassword ? actualEmail : "", isPhone: false),
                   ),
                   _buildInfoTile(
                     context,
