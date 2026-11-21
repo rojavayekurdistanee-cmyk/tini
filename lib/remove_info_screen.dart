@@ -103,7 +103,7 @@ class RemoveInfoScreen extends StatelessWidget {
                           try {
                             await currentUser.reload();
                           } catch (_) {}
-                          final refreshedUser = FirebaseAuth.instance.currentUser ?? unlinkedUser;
+                          final refreshedUser = unlinkedUser ?? FirebaseAuth.instance.currentUser;
                           if (refreshedUser == null || refreshedUser.uid != user.uid) {
                             throw StateError("تعذر قراءة الحساب بعد إلغاء الربط");
                           }
