@@ -1379,10 +1379,10 @@ try {
     syncField('emailVerified', hasPassword ? user.emailVerified : null);
 
     final pendingEmail = data['pendingEmail'];
-    if (user.emailVerified && pendingEmail is String && pendingEmail.isNotEmpty &&
-        email != null && pendingEmail.toLowerCase() == email.toLowerCase()) {
-      updates['pendingEmail'] = FieldValue.delete();
-      updates['pendingEmailRequestedAt'] = FieldValue.delete();
+    if (!hasPassword || (user.emailVerified && pendingEmail is String && pendingEmail.isNotEmpty &&
+        email != null && pendingEmail.toLowerCase() == email.toLowerCase())) {
+      if (data.containsKey('pendingEmail')) updates['pendingEmail'] = FieldValue.delete();
+      if (data.containsKey('pendingEmailRequestedAt')) updates['pendingEmailRequestedAt'] = FieldValue.delete();
     }
 
     if (updates.isNotEmpty) {
