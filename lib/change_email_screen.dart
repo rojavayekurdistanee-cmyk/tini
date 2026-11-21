@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'auth_provider.dart' as custom;
 
 /*
@@ -71,6 +73,80 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
       },
     );
     return result?? false;
+  }
+
+  Future<void> _reauthenticateWithGoogle(User user) async {
+    final googleSignIn = GoogleSignIn(
+      scopes: ['email', 'profile'],
+      serverClientId: '965066441230-tha018u6nondvcsmsrtdu4thoob7m854.apps.googleusercontent.com',
+    );
+    final googleUser = await googleSignIn.signIn();
+    if (googleUser == null) {
+      throw StateError("تم إلغاء التحقق باستخدام Google");
+    }
+    final googleAuth = await googleUser.authentication;
+    final credential = GoogleAuthProvider.credential(
+      accessToken: googleAuth.accessToken,
+      idToken: googleAuth.idToken,
+    );
+    await user.reauthenticateWithCredential(credential);
+  }
+
+  Future<PhoneAuthCredential> _requestPhoneReauthenticationCredential(String phoneNumber) async {
+    final completer = Completer<PhoneAuthCredential>();
+    await FirebaseAuth.instance.verifyPhoneNumber(
+      phoneNumber: phoneNumber,
+      timeout: const Duration(seconds: 60),
+      verificationCompleted: (credential) {
+        if (!completer.isCompleted) completer.complete(credential);
+      },
+      verificationFailed: (error) {
+        if (!completer.isCompleted) completer.completeError(error);
+      },
+      codeSent: (verificationId, _) async {
+        if (completer.isCompleted || !mounted) return;
+        final codeController = TextEditingController();
+        final code = await showDialog<String>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: surfaceColor,
+            title: const Text("تأكيد رقم الهاتف", style: TextStyle(color: Colors.white)),
+            content: TextField(
+              controller: codeController,
+              keyboardType: TextInputType.number,
+              style: const TextStyle(color: Colors.white, letterSpacing: 5),
+              decoration: const InputDecoration(
+                hintText: "رمز التحقق",
+                hintStyle: TextStyle(color: Colors.white38),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text("إلغاء", style: TextStyle(color: Colors.white70)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, codeController.text.trim()),
+                child: const Text("تأكيد", style: TextStyle(color: Colors.teal)),
+              ),
+            ],
+          ),
+        );
+        codeController.dispose();
+        if (completer.isCompleted) return;
+        if (code == null || code.isEmpty) {
+          completer.completeError(StateError("تم إلغاء التحقق برمز الهاتف"));
+          return;
+        }
+        completer.complete(PhoneAuthProvider.credential(
+          verificationId: verificationId,
+          smsCode: code,
+        ));
+      },
+      codeAutoRetrievalTimeout: (_) {},
+    );
+    return completer.future;
   }
 
   Future<void> _handleContinue() async {
@@ -160,6 +236,19 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
                   : (e.message ?? "تعذر تحديث كلمة السر.");
         }
       } else {
+        // إعادة المصادقة بالطريقة المرتبطة فعلياً قبل إضافة البريد وكلمة السر.
+        if (providers.contains('google.com')) {
+          await _reauthenticateWithGoogle(user);
+        } else if (providers.contains('phone')) {
+          final phoneProvider = user.providerData.firstWhere((p) => p.providerId == 'phone');
+          final phoneNumber = user.phoneNumber ?? phoneProvider.phoneNumber;
+          if (phoneNumber == null || phoneNumber.isEmpty) {
+            throw StateError("تعذر قراءة رقم الهاتف المرتبط لإعادة المصادقة");
+          }
+          final phoneCredential = await _requestPhoneReauthenticationCredential(phoneNumber);
+          await user.reauthenticateWithCredential(phoneCredential);
+        }
+
         final credential = EmailAuthProvider.credential(email: email, password: password);
         final result = await user.linkWithCredential(credential);
         user = result.user;
