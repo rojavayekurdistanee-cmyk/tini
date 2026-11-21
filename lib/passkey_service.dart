@@ -17,15 +17,11 @@ class PasskeyService {
   static const _keyUid = 'titi_passkey_uid'; // للتوافق القديم
   static const _keyList = 'titi_passkey_list'; // الجديد: ليستة حسابات
 
+  // يدعم البصمة أو بيانات اعتماد قفل الجهاز (PIN / pattern / password).
   static Future<bool> canCheck() async {
     try {
-      final supported = await _auth.isDeviceSupported();
-      final available = await _auth.getAvailableBiometrics();
-      print("DEBUG S22 - supported: $supported, available: $available");
-      // الصح: اذا الجهاز بيدعم وفيه بصمة مسجلة فعلاً
-      return supported && available.isNotEmpty;
-    } catch (e) {
-      print("canCheck ERROR: $e");
+      return await _auth.isDeviceSupported();
+    } catch (_) {
       return false;
     }
   }
@@ -62,40 +58,75 @@ class PasskeyService {
 
   // تفعيل بصمة لحساب معين - هاد يلي رح تستخدمه تحت كل حساب
   static Future<bool> enableForUid(String uid) async {
-    print("DEBUG enableForUid() for $uid");
+    if (uid.isEmpty || FirebaseAuth.instance.currentUser?.uid != uid) {
+      return false;
+    }
     if (!await canCheck()) return false;
 
     final didAuth = await _auth.authenticate(
-      localizedReason: 'تفعيل البصمة لهذا الحساب',
+      localizedReason: 'تأكيد هويتك لتفعيل الدخول السريع في Tini',
       options: const AuthenticationOptions(
-        biometricOnly: true,
+        biometricOnly: false,
         stickyAuth: true,
       ),
     );
-    if (!didAuth) return false;
-
-    final list = await _getEnabledUids();
-    if (!list.contains(uid)) {
-      list.add(uid);
-      await _saveEnabledUids(list);
+    if (!didAuth || FirebaseAuth.instance.currentUser?.uid != uid) {
+      return false;
     }
 
-    await FirebaseFirestore.instance.collection('users').doc(uid).set({
-      'passkeyEnabled': true,
-    }, SetOptions(merge: true));
-
-    return true;
+    final list = await _getEnabledUids();
+    final alreadyEnabled = list.contains(uid);
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(uid).set({
+        'passkeyEnabled': true,
+      }, SetOptions(merge: true));
+      if (!alreadyEnabled) {
+        list.add(uid);
+        await _saveEnabledUids(list);
+      }
+      return FirebaseAuth.instance.currentUser?.uid == uid;
+    } catch (_) {
+      if (!alreadyEnabled) {
+        list.remove(uid);
+        try {
+          await _saveEnabledUids(list);
+        } catch (_) {}
+      }
+      try {
+        await FirebaseFirestore.instance.collection('users').doc(uid).set({
+          'passkeyEnabled': false,
+        }, SetOptions(merge: true));
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   // حذف بصمة لحساب معين
   static Future<void> disableForUid(String uid) async {
+    if (uid.isEmpty || FirebaseAuth.instance.currentUser?.uid != uid) {
+      throw StateError('لا يمكن تعطيل الدخول السريع لحساب غير نشط');
+    }
     final list = await _getEnabledUids();
+    final wasEnabled = list.contains(uid);
     list.remove(uid);
     await _saveEnabledUids(list);
-
-    await FirebaseFirestore.instance.collection('users').doc(uid).set({
-      'passkeyEnabled': false,
-    }, SetOptions(merge: true));
+    try {
+      if (FirebaseAuth.instance.currentUser?.uid != uid) {
+        throw StateError('تغير الحساب أثناء تعطيل الدخول السريع');
+      }
+      await FirebaseFirestore.instance.collection('users').doc(uid).set({
+        'passkeyEnabled': false,
+      }, SetOptions(merge: true));
+    } catch (_) {
+      if (wasEnabled) {
+        final restored = await _getEnabledUids();
+        if (!restored.contains(uid)) restored.add(uid);
+        try {
+          await _saveEnabledUids(restored);
+        } catch (_) {}
+      }
+      rethrow;
+    }
   }
 
   // دخول ببصمة لحساب معين - هاد يلي رح تستخدمه تحت كل حساب
@@ -108,7 +139,7 @@ class PasskeyService {
       return await _auth.authenticate(
         localizedReason: 'تسجيل دخول سريع لـ Tini',
         options: const AuthenticationOptions(
-          biometricOnly: true,
+          biometricOnly: false,
           stickyAuth: true,
         ),
       );
