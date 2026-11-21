@@ -104,7 +104,11 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
         if (!completer.isCompleted) completer.completeError(error);
       },
       codeSent: (verificationId, _) async {
-        if (completer.isCompleted || !mounted) return;
+        if (completer.isCompleted) return;
+        if (!mounted) {
+          completer.completeError(StateError("انتهت شاشة التحقق"));
+          return;
+        }
         final codeController = TextEditingController();
         final code = await showDialog<String>(
           context: context,
@@ -294,7 +298,7 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
       } else if (emailChangeFailed) {
         parts.add("لم يتغير البريد: ${emailFailureMessage ?? "تعذر إرسال التأكيد"}");
       } else {
-        parts.add("لم يتغير البريد");
+        parts.add("البريد الحالي بقي كما هو");
       }
 
       if (passwordUpdated) {
