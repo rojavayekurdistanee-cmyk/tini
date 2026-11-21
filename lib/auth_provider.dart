@@ -1569,6 +1569,119 @@ try {
   notifyListeners(); // هذا السطر هو الذي سيجعل الشاشة "تقفز" وتظهر البريد فوراً
 }
 
+  // فحص الخزنة النشطة وإصلاح ما يمكن إثباته من Firebase فقط.
+  // لا يمكن استرجاع كلمة السر الحالية من Firebase، لذلك لا ننشئها ولا نستبدلها.
+  Future<Map<String, dynamic>> inspectAndRepairCurrentVault() async {
+    final initialUser = FirebaseAuth.instance.currentUser;
+    if (initialUser == null) throw StateError('لا يوجد حساب مسجل الدخول');
+    final uid = initialUser.uid;
+
+    await initialUser.reload();
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.uid != uid) {
+      throw StateError('تغير الحساب أثناء فحص الخزنة');
+    }
+
+    final providers = user.providerData
+        .where((provider) => provider.providerId != 'firebase')
+        .toList();
+    final providerIds = providers.map((provider) => provider.providerId).toSet();
+    if (providerIds.isEmpty) {
+      throw StateError('تعذر تحديد وسيلة الدخول المرتبطة بالحساب');
+    }
+
+    final hasPassword = providerIds.contains('password');
+    final hasGoogle = providerIds.contains('google.com');
+    final hasPhone = providerIds.contains('phone');
+    final loginType = hasGoogle ? 'google' : (hasPhone ? 'phone' : 'email');
+    final emailProvider = providers.where((p) =>
+        p.providerId == 'password' || p.providerId == 'google.com').toList();
+    final phoneProvider = providers.where((p) => p.providerId == 'phone').toList();
+    final resolvedEmail = emailProvider.isNotEmpty
+        ? (emailProvider.first.email ?? user.email)
+        : null;
+    final resolvedPhone = phoneProvider.isNotEmpty
+        ? (phoneProvider.first.phoneNumber ?? user.phoneNumber)
+        : null;
+
+    final typeKey = 'auth_type_$uid';
+    final phoneKey = 'auth_phone_$uid';
+    final passwordKey = 'auth_pass_$uid';
+    final storedType = await _secureStorage.read(key: typeKey);
+    final storedPhone = await _secureStorage.read(key: phoneKey);
+    final storedPassword = await _secureStorage.read(key: passwordKey);
+
+    bool repaired = false;
+    if (storedType != loginType) {
+      await _secureStorage.write(key: typeKey, value: loginType);
+      repaired = true;
+    }
+    if (hasPhone && resolvedPhone != null && resolvedPhone.isNotEmpty) {
+      if (storedPhone != resolvedPhone) {
+        await _secureStorage.write(key: phoneKey, value: resolvedPhone);
+        repaired = true;
+      }
+    } else if (storedPhone != null) {
+      await _secureStorage.delete(key: phoneKey);
+      repaired = true;
+    }
+
+    // كلمة السر لا تُعد صحيحة لمجرد وجودها؛ نحافظ على القيمة الموجودة ولا نكتب قيمة بديلة.
+    if (!hasPassword && storedPassword != null) {
+      await _secureStorage.delete(key: passwordKey);
+      repaired = true;
+    }
+    final passwordMissing = hasPassword &&
+        (storedPassword == null || storedPassword.isEmpty);
+
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    final snapshot = await userRef.get();
+    final data = snapshot.data() ?? <String, dynamic>{};
+    final updates = <String, dynamic>{};
+    void syncField(String key, dynamic value) {
+      if (value == null || (value is String && value.isEmpty)) {
+        if (data.containsKey(key)) updates[key] = FieldValue.delete();
+      } else if (data[key] != value) {
+        updates[key] = value;
+      }
+    }
+    syncField('authMethod', loginType);
+    syncField('authProviders', providerIds.toList()..sort());
+    syncField('email', resolvedEmail);
+    syncField('email_lowercase', resolvedEmail?.toLowerCase());
+    syncField('phoneNumber', hasPhone ? resolvedPhone : null);
+    syncField('phone', hasPhone ? resolvedPhone : null);
+    syncField('googleEmail', hasGoogle
+        ? providers.firstWhere((p) => p.providerId == 'google.com').email
+        : null);
+    syncField('isGoogleLinked', hasGoogle);
+    syncField('emailVerified', hasPassword ? user.emailVerified : null);
+    if (updates.isNotEmpty) {
+      await userRef.set(updates, SetOptions(merge: true));
+      repaired = true;
+    }
+
+    if (FirebaseAuth.instance.currentUser?.uid != uid) {
+      throw StateError('تغير الحساب أثناء إصلاح الخزنة');
+    }
+    _authType = loginType;
+    _email = resolvedEmail ?? '';
+    _phoneNumber = hasPhone ? (resolvedPhone ?? '') : '';
+    notifyListeners();
+
+    return {
+      'repaired': repaired,
+      'passwordMissing': passwordMissing,
+      'hasPassword': hasPassword,
+      'loginType': loginType,
+      'uid': uid,
+    };
+  }
+
+  Future<void> clearPasswordFromVaultStrict(String uid) async {
+    await _secureStorage.delete(key: 'auth_pass_$uid');
+  }
+
   Future<void> savePasswordToVault(String uid, String password) async {
     try {
       await _secureStorage.write(key: 'auth_pass_$uid', value: password.trim());
