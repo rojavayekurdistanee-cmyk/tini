@@ -120,6 +120,7 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
       },
       codeSent: (verificationId, resendToken) async {
         codeWasSent = true;
+        if (completer.isCompleted) return;
         if (!mounted) {
           if (!completer.isCompleted) completer.completeError(StateError("تم إغلاق الشاشة قبل إدخال رمز التحقق"));
           return;
