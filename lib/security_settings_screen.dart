@@ -3,15 +3,7 @@ import 'package:iconsax/iconsax.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'auth_provider.dart' as custom;
-// [Tini]: إضافة استيراد صفحة إدارة كلمة السر الجديدة
 import 'password_management_screen.dart';
-
-/*
-  [Tini Project Rules]:
-  1. File Name: security_settings_screen.dart
-  2. Logic: Fixed Switch Toggle & Active Click Listeners.
-  3. UI: Dark Surface (0xFF1A222C), Background (0xFF0F1720), Teal Accents.
-*/
 
 class SecuritySettingsScreen extends StatefulWidget {
   const SecuritySettingsScreen({super.key});
@@ -24,41 +16,141 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
   final Color bgColor = const Color(0xFF0F1720);
   final Color surfaceColor = const Color(0xFF1A222C);
 
-  bool _isOneTapEnabled = true;
+  bool _isOneTapEnabled = false;
+  bool _isLoadingPasskey = true;
+  bool _isPasskeyBusy = false;
   bool _isRepairing = false;
+  String? _observedUid;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final uid = Provider.of<custom.AuthProvider>(context).uid;
+    if (uid != _observedUid) {
+      _observedUid = uid;
+      _isOneTapEnabled = false;
+      _isLoadingPasskey = uid.isNotEmpty;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadPasskeyStatus(uid);
+      });
+    }
+  }
+
+  Future<void> _loadPasskeyStatus(String uid) async {
+    if (uid.isEmpty) {
+      if (mounted && _observedUid == uid) {
+        setState(() {
+          _isOneTapEnabled = false;
+          _isLoadingPasskey = false;
+        });
+      }
+      return;
+    }
+
+    bool enabled = false;
+    try {
+      final auth = Provider.of<custom.AuthProvider>(context, listen: false);
+      enabled = await auth.isPasskeyEnabledForUid(uid);
+    } catch (_) {
+      enabled = false;
+    }
+
+    if (!mounted ||
+        _observedUid != uid ||
+        FirebaseAuth.instance.currentUser?.uid != uid) {
+      return;
+    }
+    setState(() {
+      _isOneTapEnabled = enabled;
+      _isLoadingPasskey = false;
+    });
+  }
+
+  Future<void> _handlePasskeyToggle(
+    bool requestedValue,
+    custom.AuthProvider auth,
+  ) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.isEmpty || uid != _observedUid || _isPasskeyBusy) return;
+
+    final previousValue = _isOneTapEnabled;
+    setState(() => _isPasskeyBusy = true);
+    bool succeeded = false;
+    try {
+      if (requestedValue) {
+        succeeded = await auth.enablePasskeyForUid(uid);
+      } else {
+        succeeded = await auth.disablePasskeyForUid(uid);
+      }
+    } catch (_) {
+      succeeded = false;
+    }
+
+    if (!mounted) return;
+    final sameAccount = FirebaseAuth.instance.currentUser?.uid == uid &&
+        _observedUid == uid;
+    if (sameAccount) {
+      setState(() {
+        _isOneTapEnabled = succeeded ? requestedValue : previousValue;
+        _isPasskeyBusy = false;
+      });
+    } else {
+      setState(() {
+        _isOneTapEnabled = false;
+        _isPasskeyBusy = false;
+        _isLoadingPasskey = true;
+      });
+    }
+
+    if (sameAccount && !succeeded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لم يتم تغيير حالة الدخول بلمسة واحدة. يمكنك المحاولة مرة أخرى.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    } else if (sameAccount && succeeded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(requestedValue
+              ? 'تم تفعيل الدخول بلمسة واحدة لهذا الحساب'
+              : 'تم تعطيل الدخول بلمسة واحدة لهذا الحساب'),
+          backgroundColor: Colors.teal,
+        ),
+      );
+    }
+  }
 
   Future<void> _handleVaultRepair(custom.AuthProvider auth) async {
+    if (_isRepairing) return;
     setState(() => _isRepairing = true);
 
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final result = await auth.inspectAndRepairCurrentVault();
+      final repaired = result['repaired'] == true;
+      final passwordMissing = result['passwordMissing'] == true;
 
-      if (user != null) {
-        String loginType = 'email';
-        if (user.providerData.any((p) => p.providerId == 'google.com')) {
-          loginType = 'google';
-        } else if (user.providerData.any((p) => p.providerId == 'phone')) {
-          loginType = 'phone';
-        }
-
-        await auth.syncCurrentAccountToVault(user.uid, loginType);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text("تم تأمين حسابك ($loginType) في الخزنة بنجاح!"),
-              backgroundColor: Colors.teal,
-            ),
-          );
-        }
+      String message;
+      if (passwordMissing) {
+        message = repaired
+            ? 'تم إصلاح بيانات الدخول المتاحة، لكن كلمة السر غير موجودة بالخزنة ولا يمكن استعادتها تلقائياً.'
+            : 'تم فحص الخزنة. كلمة السر غير موجودة فيها، ولا يمكن استعادتها تلقائياً.';
+      } else if (repaired) {
+        message = 'تم إصلاح بيانات الخزنة ومزامنتها مع وسيلة الدخول الحالية.';
       } else {
-        throw "لا يوجد مستخدم نشط حالياً";
+        message = 'تم التحقق: بيانات الخزنة متطابقة مع حساب Firebase.';
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.teal),
+        );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("فشل التحديث: $e"),
+            content: Text('تعذّر إصلاح الخزنة: $e'),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -71,6 +163,13 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = Provider.of<custom.AuthProvider>(context);
+    final passkeySubtitle = _isLoadingPasskey
+        ? 'جاري التحقق من حالة هذا الحساب...'
+        : _isPasskeyBusy
+            ? 'جاري تحديث الإعداد...'
+            : _isOneTapEnabled
+                ? 'الدخول السريع مفعّل لهذا الحساب'
+                : 'استخدم بصمة الإصبع أو قفل شاشة الجهاز';
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -87,7 +186,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
-          "الأمان وكلمة السر",
+          'الأمان وكلمة السر',
           style: TextStyle(
             color: Colors.white,
             fontSize: 17,
@@ -108,24 +207,22 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                 children: [
                   _buildSecurityTile(
                     Iconsax.shield_tick,
-                    "دخول بلمسة واحدة",
-                    subtitle: "تفعيل حفظ بيانات الجهاز",
+                    'دخول بلمسة واحدة',
+                    subtitle: passkeySubtitle,
                     isSwitch: true,
                     switchValue: _isOneTapEnabled,
-                    onChanged: (val) {
-                      setState(() {
-                        _isOneTapEnabled = val;
-                      });
-                    },
+                    switchEnabled: !_isLoadingPasskey && !_isPasskeyBusy &&
+                        auth.uid.isNotEmpty,
+                    onChanged: (value) => _handlePasskeyToggle(value, auth),
                   ),
                   const Divider(color: Colors.white10, height: 1),
                   _buildSecurityTile(
                     Iconsax.refresh,
-                    "تحديث وتصحيح الخزنة",
+                    'تحديث وتصحيح الخزنة',
                     subtitle: _isRepairing
-                        ? "جاري المعالجة..."
-                        : "اضغط هنا لإصلاح مشكلة الدخول الصامت",
-                    onTap: () => _handleVaultRepair(auth),
+                        ? 'جاري فحص البيانات ومزامنتها...'
+                        : 'فحص بيانات الدخول وإصلاح الاختلافات الآمنة',
+                    onTap: _isRepairing ? null : () => _handleVaultRepair(auth),
                     trailing: _isRepairing
                         ? const SizedBox(
                             width: 18,
@@ -142,12 +239,10 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
                           ),
                   ),
                   const Divider(color: Colors.white10, height: 1),
-
-                  // [Tini]: تم ربط الزر بصفحة إدارة كلمة السر بنجاح
                   _buildSecurityTile(
                     Iconsax.key,
-                    "إدارة كلمة السر",
-                    subtitle: "تغيير أو تحديث كلمة المرور الخاصة بك",
+                    'إدارة كلمة السر',
+                    subtitle: 'تغيير كلمة السر أو ربط كلمة سر بهذا الحساب',
                     onTap: () {
                       Navigator.push(
                         context,
@@ -173,6 +268,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
     String? subtitle,
     bool isSwitch = false,
     bool switchValue = false,
+    bool switchEnabled = true,
     Function(bool)? onChanged,
     VoidCallback? onTap,
     Widget? trailing,
@@ -193,7 +289,7 @@ class _SecuritySettingsScreenState extends State<SecuritySettingsScreen> {
       trailing: isSwitch
           ? Switch(
               value: switchValue,
-              onChanged: onChanged,
+              onChanged: switchEnabled ? onChanged : null,
               activeThumbColor: Colors.teal,
               activeTrackColor: Colors.teal.withValues(alpha: 0.3),
             )
