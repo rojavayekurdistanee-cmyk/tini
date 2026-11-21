@@ -1433,7 +1433,7 @@ try {
     final passwordProvider = passwordProviders.isEmpty ? null : passwordProviders.first;
     final googleProvider = googleProviders.isEmpty ? null : googleProviders.first;
     final phoneProvider = phoneProviders.isEmpty ? null : phoneProviders.first;
-    final actualEmail = passwordProvider?.email ?? user.email ?? googleProvider?.email;
+    final actualEmail = passwordProvider?.email ?? googleProvider?.email;
     final actualPhone = phoneProvider?.phoneNumber;
 
     await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
