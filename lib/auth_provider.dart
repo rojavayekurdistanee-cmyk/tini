@@ -1651,8 +1651,16 @@ try {
     void syncField(String key, dynamic value) {
       if (value == null || (value is String && value.isEmpty)) {
         if (data.containsKey(key)) updates[key] = FieldValue.delete();
-      } else if (data[key] != value) {
-        updates[key] = value;
+      } else {
+        final existing = data[key];
+        final same = value is List && existing is List
+            ? existing.length == value.length &&
+                List.generate(
+                  value.length,
+                  (index) => existing[index] == value[index],
+                ).every((match) => match)
+            : existing == value;
+        if (!same) updates[key] = value;
       }
     }
     syncField('authMethod', loginType);
