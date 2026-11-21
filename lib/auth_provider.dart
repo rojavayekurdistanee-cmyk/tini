@@ -1420,6 +1420,42 @@ try {
   notifyListeners(); // هذا السطر هو الذي سيجعل الشاشة "تقفز" وتظهر البريد فوراً
 }
 
+  // مزامنة وسائل الدخول من Firebase Authentication إلى Firestore.
+  // providerData هو مصدر الحقيقة، وليس القيم المخزنة سابقاً في المستند.
+  Future<void> syncAccountLoginMethodsFromFirebase() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw StateError('يجب تسجيل الدخول لمزامنة وسائل الدخول');
+
+    final providers = user.providerData;
+    final passwordProviders = providers.where((p) => p.providerId == 'password');
+    final googleProviders = providers.where((p) => p.providerId == 'google.com');
+    final phoneProviders = providers.where((p) => p.providerId == 'phone');
+    final passwordProvider = passwordProviders.isEmpty ? null : passwordProviders.first;
+    final googleProvider = googleProviders.isEmpty ? null : googleProviders.first;
+    final phoneProvider = phoneProviders.isEmpty ? null : phoneProviders.first;
+    final actualEmail = passwordProvider?.email ?? user.email ?? googleProvider?.email;
+    final actualPhone = phoneProvider?.phoneNumber;
+
+    await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      'authProviders': providers.map((p) => p.providerId).toSet().toList(),
+      'hasPasswordProvider': passwordProvider != null,
+      'isGoogleLinked': googleProvider != null,
+      'googleEmail': googleProvider?.email ?? FieldValue.delete(),
+      'email': actualEmail ?? FieldValue.delete(),
+      'email_lowercase': actualEmail?.toLowerCase() ?? FieldValue.delete(),
+      'phoneNumber': actualPhone ?? FieldValue.delete(),
+      'phone': actualPhone ?? FieldValue.delete(),
+    }, SetOptions(merge: true));
+  }
+
+  // نسخة صارمة للخزنة حتى لا نعلن نجاح الحفظ إذا فشل التخزين الآمن.
+  Future<void> savePasswordToVaultStrict(String uid, String password) async {
+    if (uid.isEmpty || password.isEmpty) {
+      throw ArgumentError('بيانات الخزنة غير صالحة');
+    }
+    await _secureStorage.write(key: 'auth_pass_$uid', value: password);
+  }
+
   Future<void> savePasswordToVault(String uid, String password) async {
     try {
       await _secureStorage.write(key: 'auth_pass_$uid', value: password.trim());
