@@ -728,18 +728,45 @@ Future<void> fetchUserData() async {
         _resetVerifiedAge();
       }
       
-      _email = data['email'] ?? user.email ?? "";
-          
-      _phoneNumber = data['phoneNumber'] ?? user.phoneNumber ?? "";
+      final passwordProviders = user.providerData.where((p) => p.providerId == 'password').toList();
+      final googleProviders = user.providerData.where((p) => p.providerId == 'google.com').toList();
+      final phoneProviders = user.providerData.where((p) => p.providerId == 'phone').toList();
+      final resolvedEmail = (passwordProviders.isNotEmpty ? passwordProviders.first.email : null) ??
+          (googleProviders.isNotEmpty ? googleProviders.first.email : null) ??
+          user.email;
+      final resolvedPhone = phoneProviders.isNotEmpty
+          ? (phoneProviders.first.phoneNumber ?? user.phoneNumber)
+          : null;
 
-      // [Tini Fix V6.1 - Immediate Sync]: مزامنة فورية بعد تأكيد الرابط
-      if (user.email != null && user.email!.isNotEmpty && _email != user.email) {
-        _email = user.email;
-        FirebaseFirestore.instance.collection('users').doc(user.uid).set({'email': user.email}, SetOptions(merge: true));
+      // بيانات الاتصال تُقرأ من المزوّد المرتبط فعلياً، وليس من قيم Firestore القديمة.
+      _email = resolvedEmail ?? "";
+      _phoneNumber = resolvedPhone ?? "";
+
+      final contactRepairs = <String, dynamic>{};
+      if (resolvedEmail != null && resolvedEmail.isNotEmpty) {
+        if (data['email'] != resolvedEmail) contactRepairs['email'] = resolvedEmail;
+        if (data['email_lowercase'] != resolvedEmail.toLowerCase()) {
+          contactRepairs['email_lowercase'] = resolvedEmail.toLowerCase();
+        }
+      } else {
+        if (data.containsKey('email')) contactRepairs['email'] = FieldValue.delete();
+        if (data.containsKey('email_lowercase')) contactRepairs['email_lowercase'] = FieldValue.delete();
       }
-      if (user.phoneNumber != null && user.phoneNumber!.isNotEmpty && _phoneNumber != user.phoneNumber) {
-        _phoneNumber = user.phoneNumber;
-        FirebaseFirestore.instance.collection('users').doc(user.uid).set({'phoneNumber': user.phoneNumber, 'phone': user.phoneNumber}, SetOptions(merge: true));
+      if (resolvedPhone != null && resolvedPhone.isNotEmpty) {
+        if (data['phoneNumber'] != resolvedPhone) contactRepairs['phoneNumber'] = resolvedPhone;
+        if (data['phone'] != resolvedPhone) contactRepairs['phone'] = resolvedPhone;
+      } else {
+        if (data.containsKey('phoneNumber')) contactRepairs['phoneNumber'] = FieldValue.delete();
+        if (data.containsKey('phone')) contactRepairs['phone'] = FieldValue.delete();
+      }
+      if (passwordProviders.isNotEmpty && data['emailVerified'] != user.emailVerified) {
+        contactRepairs['emailVerified'] = user.emailVerified;
+      }
+      if (contactRepairs.isNotEmpty) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+          contactRepairs,
+          SetOptions(merge: true),
+        );
       }
 
       if (data.containsKey('createdAt') && data['createdAt'] != null) {
