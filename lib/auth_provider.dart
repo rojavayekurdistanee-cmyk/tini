@@ -763,10 +763,14 @@ Future<void> fetchUserData() async {
         contactRepairs['emailVerified'] = user.emailVerified;
       }
       if (contactRepairs.isNotEmpty) {
-        await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
-          contactRepairs,
-          SetOptions(merge: true),
-        );
+        try {
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+            contactRepairs,
+            SetOptions(merge: true),
+          );
+        } catch (_) {
+          // فشل إصلاح حقول الاتصال لا يمنع تحميل بقية بيانات الحساب.
+        }
       }
 
       if (data.containsKey('createdAt') && data['createdAt'] != null) {
