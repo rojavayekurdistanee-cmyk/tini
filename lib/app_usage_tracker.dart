@@ -245,7 +245,7 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
           final restoredDaily = daily is bool ? daily : _dailyEnabled;
           final restoredWeekly = weekly is bool ? weekly : _weeklyEnabled;
           final restoredLimit = limit is num
-              ? limit.toInt().clamp(1, 1440)
+              ? limit.toInt().clamp(1, 1440).toInt()
               : _limitMinutes;
 
           await prefs.setBool('titi_daily_limit', restoredDaily);
