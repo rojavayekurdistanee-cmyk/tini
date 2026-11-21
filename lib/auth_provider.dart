@@ -731,9 +731,9 @@ Future<void> fetchUserData() async {
       final passwordProviders = user.providerData.where((p) => p.providerId == 'password').toList();
       final googleProviders = user.providerData.where((p) => p.providerId == 'google.com').toList();
       final phoneProviders = user.providerData.where((p) => p.providerId == 'phone').toList();
-      final resolvedEmail = (passwordProviders.isNotEmpty ? passwordProviders.first.email : null) ??
-          (googleProviders.isNotEmpty ? googleProviders.first.email : null) ??
-          user.email;
+      final resolvedEmail = passwordProviders.isNotEmpty
+          ? (passwordProviders.first.email ?? user.email)
+          : (googleProviders.isNotEmpty ? (googleProviders.first.email ?? user.email) : null);
       final resolvedPhone = phoneProviders.isNotEmpty
           ? (phoneProviders.first.phoneNumber ?? user.phoneNumber)
           : null;
@@ -1346,9 +1346,9 @@ try {
     final hasGoogle = googleProviders.isNotEmpty;
     final hasPhone = phoneProviders.isNotEmpty;
 
-    final email = (hasPassword ? passwordProviders.first.email : null) ??
-        (hasGoogle ? googleProviders.first.email : null) ??
-        user.email;
+    final email = hasPassword
+        ? (passwordProviders.first.email ?? user.email)
+        : (hasGoogle ? (googleProviders.first.email ?? user.email) : null);
     final googleEmail = hasGoogle ? googleProviders.first.email : null;
     final phoneNumber = (hasPhone ? phoneProviders.first.phoneNumber : null) ?? user.phoneNumber;
     final loginType = hasGoogle ? 'google' : (hasPhone ? 'phone' : 'email');
