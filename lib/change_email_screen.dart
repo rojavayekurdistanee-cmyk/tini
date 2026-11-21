@@ -103,8 +103,15 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
     setState(() => _isSubmitting = true);
 
     bool emailVerificationSent = false;
+    bool emailChangeFailed = false;
     bool passwordUpdated = false;
     bool linked = false;
+    bool verificationSendFailed = false;
+    bool firestoreSynced = false;
+    bool vaultSynced = false;
+    String? emailFailureMessage;
+    String? passwordFailureMessage;
+
     try {
       final auth = context.read<custom.AuthProvider>();
       User? user = FirebaseAuth.instance.currentUser;
@@ -125,13 +132,33 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
         await user.reauthenticateWithCredential(
           EmailAuthProvider.credential(email: currentEmail, password: currentPassword),
         );
+
         if (currentEmail.toLowerCase() != email.toLowerCase()) {
-          await user.verifyBeforeUpdateEmail(email);
-          emailVerificationSent = true;
+          try {
+            await user.verifyBeforeUpdateEmail(email);
+            emailVerificationSent = true;
+          } on FirebaseAuthException catch (e) {
+            emailChangeFailed = true;
+            emailFailureMessage = e.code == 'email-already-in-use' || e.code == 'credential-already-in-use'
+                ? "البريد مستخدم أو مربوط بحساب آخر."
+                : (e.message ?? "تعذر إرسال تأكيد البريد.");
+          } catch (e) {
+            emailChangeFailed = true;
+            emailFailureMessage = e.toString();
+          }
         }
-        // لا نبتلع فشل Firebase ولا نحفظ كلمة السر بالخزنة قبله.
-        await user.updatePassword(password);
-        passwordUpdated = true;
+
+        // البريد وكلمة السر عمليتان مستقلتان؛ فشل الأولى لا يمنع محاولة الثانية.
+        try {
+          await user.updatePassword(password);
+          passwordUpdated = true;
+        } on FirebaseAuthException catch (e) {
+          passwordFailureMessage = e.code == 'weak-password'
+              ? "كلمة السر الجديدة ضعيفة."
+              : e.code == 'requires-recent-login'
+                  ? "يلزم تسجيل الدخول مجدداً لتحديث كلمة السر."
+                  : (e.message ?? "تعذر تحديث كلمة السر.");
+        }
       } else {
         final credential = EmailAuthProvider.credential(email: email, password: password);
         final result = await user.linkWithCredential(credential);
@@ -140,15 +167,12 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
           throw StateError("تعذر تأكيد بقاء الحساب على UID نفسه");
         }
         linked = true;
-        await user.reload();
-        user = FirebaseAuth.instance.currentUser;
-        if (user == null || user.uid != originalUid) {
-          throw StateError("تغيرت جلسة الحساب أثناء ربط البريد");
-        }
         passwordUpdated = true;
-        if (!user.emailVerified) {
+        try {
           await user.sendEmailVerification();
           emailVerificationSent = true;
+        } catch (_) {
+          verificationSendFailed = true;
         }
       }
 
@@ -157,22 +181,59 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
         throw StateError("تغير الحساب أثناء العملية؛ لم يتم اعتماد النتيجة");
       }
 
-      // نزامن بيانات Firebase الفعلية أولاً، ثم نحفظ كلمة السر محلياً بعد نجاح Firebase.
-      await auth.syncAccountLoginMethodsFromFirebase();
+      try {
+        await auth.syncAccountLoginMethodsFromFirebase();
+        firestoreSynced = true;
+      } catch (_) {
+        firestoreSynced = false;
+      }
       if (passwordUpdated) {
-        await auth.savePasswordToVaultStrict(originalUid, password);
+        try {
+          await auth.savePasswordToVaultStrict(originalUid, password);
+          vaultSynced = true;
+        } catch (_) {
+          vaultSynced = false;
+        }
       }
 
       if (!mounted) return;
-      final message = emailVerificationSent
-          ? (linked
-              ? "تم ربط البريد وكلمة السر بالحساب نفسه. أرسلنا رسالة تأكيد؛ لن يصبح البريد معتمداً قبل تأكيده."
-              : "تم تحديث كلمة السر وإرسال طلب تأكيد البريد الجديد. سيبقى البريد الحالي معتمداً حتى تأكيد الرسالة.")
-          : "تم تحديث كلمة السر بنجاح.";
+      final parts = <String>[];
+      if (linked) {
+        parts.add("تم ربط البريد وكلمة السر بالحساب نفسه");
+      } else if (emailVerificationSent) {
+        parts.add("تم إرسال طلب تأكيد البريد؛ سيبقى البريد الحالي معتمداً حتى تأكيده");
+      } else if (emailChangeFailed) {
+        parts.add("لم يتغير البريد: ${emailFailureMessage ?? "تعذر إرسال التأكيد"}");
+      } else {
+        parts.add("لم يتغير البريد");
+      }
+
+      if (passwordUpdated) {
+        parts.add("تم تحديث كلمة السر في Firebase");
+      } else {
+        parts.add("لم تتغير كلمة السر: ${passwordFailureMessage ?? "تعذر تحديثها"}");
+      }
+      if (verificationSendFailed) {
+        parts.add("تعذر إرسال رسالة التحقق؛ يمكنك طلبها لاحقاً من إعدادات الحساب");
+      }
+      if (!firestoreSynced) {
+        parts.add("تعذرت مزامنة بيانات وسائل الدخول في Firestore، وستُعاد المحاولة عند فتح تفاصيل الحساب");
+      }
+      if (passwordUpdated && !vaultSynced) {
+        parts.add("لم تُحفظ كلمة السر الجديدة في الخزنة المحلية؛ أعد تسجيل الدخول لحفظها");
+      }
+
+      final complete = passwordUpdated && !emailChangeFailed && firestoreSynced && vaultSynced && !verificationSendFailed;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message, textAlign: TextAlign.right), backgroundColor: const Color(0xFF1A222C), duration: const Duration(seconds: 5)),
+        SnackBar(
+          content: Text(parts.join(". "), textAlign: TextAlign.right),
+          backgroundColor: complete ? const Color(0xFF1A222C) : Colors.orange.shade800,
+          duration: const Duration(seconds: 7),
+        ),
       );
-      Navigator.pop(context, true);
+      if (passwordUpdated || emailVerificationSent || linked) {
+        Navigator.pop(context, true);
+      }
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       String message;
@@ -202,7 +263,7 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
           message = "وسيلة البريد مرتبطة مسبقاً. حدّث تفاصيل الحساب ثم أعد المحاولة.";
           break;
         default:
-          message = e.message ?? "تعذر إكمال التعديل (" + e.code + ").";
+          message = e.message ?? "تعذر إكمال العملية (" + e.code + ").";
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message, textAlign: TextAlign.right), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 6)),
