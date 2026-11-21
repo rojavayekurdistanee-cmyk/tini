@@ -190,7 +190,7 @@ class PasskeyService {
       return await _auth.authenticate(
         localizedReason: 'تسجيل دخول سريع لـ Tini',
         options: const AuthenticationOptions(
-          biometricOnly: true,
+          biometricOnly: false,
           stickyAuth: true,
         ),
       );
