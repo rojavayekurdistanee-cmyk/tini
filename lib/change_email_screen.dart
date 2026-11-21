@@ -205,7 +205,7 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
           throw FirebaseAuthException(code: 'current-password-required', message: 'أدخل كلمة السر الحالية للتحقق من هويتك قبل التعديل.');
         }
         final passwordProvider = user.providerData.firstWhere((p) => p.providerId == 'password');
-        final currentEmail = user.email ?? passwordProvider.email;
+        final currentEmail = passwordProvider.email ?? user.email;
         if (currentEmail == null || currentEmail.isEmpty) {
           throw StateError("تعذر قراءة البريد الحالي من Firebase");
         }
@@ -245,7 +245,7 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
           await _reauthenticateWithGoogle(user);
         } else if (providers.contains('phone')) {
           final phoneProvider = user.providerData.firstWhere((p) => p.providerId == 'phone');
-          final phoneNumber = user.phoneNumber ?? phoneProvider.phoneNumber;
+          final phoneNumber = phoneProvider.phoneNumber ?? user.phoneNumber;
           if (phoneNumber == null || phoneNumber.isEmpty) {
             throw StateError("تعذر قراءة رقم الهاتف المرتبط لإعادة المصادقة");
           }
