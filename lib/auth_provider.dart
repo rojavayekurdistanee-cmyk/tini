@@ -557,6 +557,7 @@ Future<bool> silentLogin(String uid) async {
     }
   }
   void _clearInternalData() {
+    _passkeyEnabled = false;
     _liveUserSub?.cancel();
     _liveUserSub = null;
     _liveBlockedBySub?.cancel();
@@ -1437,7 +1438,16 @@ try {
   }
   // [PASSKEY V5 - عبر PasskeyService يلي انت انشأتو]
   Future<void> loadPasskeyStatus() async {
-    _passkeyEnabled = await PasskeyService.isEnabledLocal();
+    final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (currentUid.isEmpty) {
+      _passkeyEnabled = false;
+      notifyListeners();
+      return;
+    }
+    final enabled = await PasskeyService.isEnabledForUid(currentUid);
+    if (FirebaseAuth.instance.currentUser?.uid != currentUid) return;
+    _passkeyEnabled = enabled;
+    _passkeyEnabledMap[currentUid] = enabled;
     notifyListeners();
   }
 
@@ -1672,6 +1682,8 @@ try {
     return {
       'repaired': repaired,
       'passwordMissing': passwordMissing,
+      'passwordStored': hasPassword &&
+          storedPassword != null && storedPassword.isNotEmpty,
       'hasPassword': hasPassword,
       'loginType': loginType,
       'uid': uid,
