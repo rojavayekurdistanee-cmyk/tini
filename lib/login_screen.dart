@@ -1146,6 +1146,29 @@ Future<void> _saveAccountLocally(String uid, String type) async {
            'twoFactorEnabled': false,
            'twoFactorTypes': [],
           }, SetOptions(merge: true));
+
+          // Send the verification email for newly created email/password accounts.
+          try {
+            await userCredential.user!.sendEmailVerification();
+          } on FirebaseAuthException catch (verificationError) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'تم إنشاء الحساب، لكن تعذّر إرسال رسالة تأكيد البريد: ${verificationError.message ?? verificationError.code}',
+                  ),
+                ),
+              );
+            }
+          } catch (verificationError) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('تم إنشاء الحساب، لكن تعذّر إرسال رسالة تأكيد البريد. حاول لاحقاً.'),
+                ),
+              );
+            }
+          }
         } on FirebaseAuthException catch (createError) {
           if (createError.code == 'email-already-in-use') {
             // صارت حالة نادرة: الإيميل موجود بس الباسورد غلط
