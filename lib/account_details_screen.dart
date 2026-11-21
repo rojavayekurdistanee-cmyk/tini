@@ -107,8 +107,8 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
                     context,
                     Iconsax.call, 
                     "رقم الهاتف", 
-                    hasPhoneProvider ? (phoneFromProvider.isEmpty ? (auth.phoneNumber.isEmpty ? "غير مرتبط" : auth.phoneNumber) : phoneFromProvider) : "غير مرتبط",
-                    () => _showActionSheet(context, "رقم الهاتف", Iconsax.call, hasPhoneProvider ? (phoneFromProvider.isEmpty ? auth.phoneNumber : phoneFromProvider) : "", isPhone: true),
+                    hasPhoneProvider ? (phoneFromProvider.isEmpty ? "مرتبط" : phoneFromProvider) : "غير مرتبط",
+                    () => _showActionSheet(context, "رقم الهاتف", Iconsax.call, hasPhoneProvider ? (phoneFromProvider.isEmpty ? "مرتبط" : phoneFromProvider) : "", isPhone: true),
                   ),
                   _buildInfoTile(
                     context,
