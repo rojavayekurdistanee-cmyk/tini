@@ -45,92 +45,118 @@ class RemoveInfoScreen extends StatelessWidget {
               width: double.infinity,
               height: 55,
               child: ElevatedButton(
-                onPressed: auth.isLoading 
-                  ? null 
+                onPressed: auth.isLoading
+                  ? null
                   : () async {
-                      final User? user = FirebaseAuth.instance.currentUser;
-                      if (user == null) return;
-
-                      final hasPhone = user.providerData.any((p) => p.providerId == 'phone');
-                      final hasPassword = user.providerData.any((p) => p.providerId == 'password');
-                      final hasGoogle = user.providerData.any((p) => p.providerId == 'google.com');
-                      final providersCount = [hasPhone, hasPassword, hasGoogle].where((e) => e).length;
-                      
-                      if (providersCount <= 1) {
-                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text("لا يمكنك إلغاء الربط، يجب أن تبقي طريقة تسجيل واحدة على الأقل"), backgroundColor: Colors.orange),
-                          );
-                        }
+                      final messenger = ScaffoldMessenger.of(context);
+                      final initialUser = FirebaseAuth.instance.currentUser;
+                      if (initialUser == null) {
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text("لا يوجد حساب مسجل دخول"), backgroundColor: Colors.redAccent),
+                        );
                         return;
                       }
 
+                      String providerId;
+                      if (title == "رقم الهاتف") {
+                        providerId = 'phone';
+                      } else if (title == "البريد الإلكتروني") {
+                        providerId = 'password';
+                      } else if (title == "حساب Google") {
+                        providerId = 'google.com';
+                      } else {
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text("وسيلة الدخول المطلوبة غير معروفة"), backgroundColor: Colors.redAccent),
+                        );
+                        return;
+                      }
+
+                      bool unlinkCompleted = false;
                       try {
-                        if (title == "رقم الهاتف") {
-                          if (hasPhone) {
-                            await user.unlink('phone');
-                          }
-                          await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-                            'phoneNumber': FieldValue.delete(),
-                            'phone': FieldValue.delete(),
-                          });
-
-                        } else if (title == "البريد الإلكتروني") {
-                          // اذا مربوط كباسورد، فك ربطه
-                          if (hasPassword) {
-                            await user.unlink('password');
-                          }
-                          await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-                            'email': FieldValue.delete(),
-                          });
-
-                        } else if (title == "حساب Google") {
-                          if (hasGoogle) {
-                            await user.unlink('google.com');
-                          }
-                          await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-                            'googleEmail': FieldValue.delete(),
-                            'isGoogleLinked': false,
-                          });
+                        final originalUid = initialUser.uid;
+                        await initialUser.reload();
+                        final currentUser = FirebaseAuth.instance.currentUser;
+                        if (currentUser == null || currentUser.uid != originalUid) {
+                          throw StateError("تغير الحساب الحالي. أعد المحاولة");
                         }
 
-                        try { await FirebaseAuth.instance.currentUser?.reload(); } catch (_) {}
-                        try { await user.reload(); } catch (_) {}
+                        final providerIds = currentUser.providerData
+                            .where((provider) => provider.providerId != 'firebase')
+                            .map((provider) => provider.providerId)
+                            .toSet();
+
+                        if (!providerIds.contains(providerId)) {
+                          messenger.showSnackBar(
+                            SnackBar(
+                              content: Text("$title غير مرتبط فعلياً بحساب Firebase"),
+                              backgroundColor: Colors.orange,
+                            ),
+                          );
+                          return;
+                        }
+
+                        final remainingProviders = providerIds.where((id) => id != providerId).toList();
+                        if (remainingProviders.isEmpty) {
+                          messenger.showSnackBar(
+                            const SnackBar(
+                              content: Text("لا يمكنك إلغاء ربط آخر وسيلة دخول صالحة"),
+                              backgroundColor: Colors.orange,
+                            ),
+                          );
+                          return;
+                        }
+
+                        await currentUser.unlink(providerId);
+                        unlinkCompleted = true;
+
+                        final afterUnlink = FirebaseAuth.instance.currentUser;
+                        if (afterUnlink == null || afterUnlink.uid != originalUid) {
+                          throw StateError("تم إلغاء الربط لكن تعذر قراءة الحساب الحالي بعد العملية");
+                        }
+                        await afterUnlink.reload();
+
+                        // تحديث Firestore والخزنة من providerData الجديد فقط.
+                        await auth.syncAccountProvidersFromFirebase();
                         await auth.fetchUserData();
 
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text("تم إلغاء ربط $title بنجاح"), backgroundColor: Colors.green),
-                          );
-                          Navigator.pop(context, true);
+                        if (!context.mounted) return;
+                        messenger.showSnackBar(
+                          SnackBar(content: Text("تم إلغاء ربط $title بنجاح"), backgroundColor: Colors.teal),
+                        );
+                        Navigator.pop(context, true);
+                      } on FirebaseAuthException catch (error) {
+                        if (!context.mounted) return;
+                        String reason = error.message ?? error.code;
+                        if (error.code == 'requires-recent-login') {
+                          reason = "يجب تأكيد تسجيل الدخول من جديد قبل إلغاء الربط";
+                        } else if (error.code == 'no-such-provider') {
+                          reason = "وسيلة الدخول غير مرتبطة فعلياً بحساب Firebase";
+                        } else if (error.code == 'network-request-failed') {
+                          reason = "تحقق من الاتصال بالإنترنت";
                         }
-                      } on FirebaseAuthException catch (e) {
-                        // --- هون رح يطلع السبب الحقيقي ---
-                        if (context.mounted) {
-                          String reason = e.code;
-                          if (e.code == 'requires-recent-login') {
-                            reason = "requires-recent-login: لازم تسجل دخول من جديد";
-                          } else if (e.code == 'no-such-provider') {
-                            reason = "no-such-provider: الحساب مو مربوط بـ Firebase Auth (موجود بس بـ Firestore)";
-                          }
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("فشل: $reason\n${e.message ?? ''}"), 
-                              backgroundColor: Colors.redAccent,
-                              duration: const Duration(seconds: 5),
-                            ),
-                          );
-                        }
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("فشل عام: ${e.toString()}"), 
-                              backgroundColor: Colors.redAccent,
-                              duration: const Duration(seconds: 5),
-                            ),
-                          );
-                        }
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(unlinkCompleted
+                                ? "تم إلغاء الربط في Firebase، لكن تعذرت مزامنة البيانات: $reason. افتح تفاصيل الحساب لاحقاً لإعادة المزامنة."
+                                : "فشل إلغاء الربط: $reason"),
+                            backgroundColor: Colors.redAccent,
+                            duration: const Duration(seconds: 7),
+                          ),
+                        );
+                        if (unlinkCompleted) Navigator.pop(context, true);
+                      } catch (error) {
+                        if (!context.mounted) return;
+                        final reason = error.toString().replaceFirst("Bad state: ", "");
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(unlinkCompleted
+                                ? "تم إلغاء الربط في Firebase، لكن تعذرت مزامنة Firestore أو الخزنة: $reason. ستُعاد المحاولة عند فتح تفاصيل الحساب."
+                                : "فشل إلغاء الربط: $reason"),
+                            backgroundColor: Colors.redAccent,
+                            duration: const Duration(seconds: 7),
+                          ),
+                        );
+                        if (unlinkCompleted) Navigator.pop(context, true);
                       }
                     },
                 style: ElevatedButton.styleFrom(
