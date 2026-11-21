@@ -1,10 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'auth_provider.dart' as custom;
-import 'login_screen.dart';
 
 /*
   [Tini Project Rules]:
@@ -27,11 +27,14 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
 
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _currentPasswordController = TextEditingController();
+  bool _isSubmitting = false;
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _currentPasswordController.dispose();
     super.dispose();
   }
 
@@ -72,146 +75,283 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
     return result?? false;
   }
 
-  Future<void> _handleContinue() async {
-    final auth = context.read<custom.AuthProvider>();
+  Future<String?> _showPhoneCodeDialog() async {
+    final controller = TextEditingController();
+    final code = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: surfaceColor,
+        title: const Text("تأكيد رقم الهاتف", style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(color: Colors.white, letterSpacing: 5),
+          decoration: const InputDecoration(hintText: "رمز التحقق", hintStyle: TextStyle(color: Colors.white38)),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text("إلغاء", style: TextStyle(color: Colors.white54))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.pop(dialogContext, value);
+            },
+            child: const Text("تأكيد", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return code;
+  }
 
+  Future<PhoneAuthCredential> _requestPhoneReauthentication(String phoneNumber) async {
+    final completer = Completer<PhoneAuthCredential>();
+    bool codeWasSent = false;
+    await FirebaseAuth.instance.verifyPhoneNumber(
+      phoneNumber: phoneNumber,
+      timeout: const Duration(seconds: 60),
+      verificationCompleted: (credential) {
+        if (!completer.isCompleted) completer.complete(credential);
+      },
+      verificationFailed: (error) {
+        if (!completer.isCompleted) completer.completeError(error);
+      },
+      codeSent: (verificationId, resendToken) async {
+        codeWasSent = true;
+        if (completer.isCompleted) return;
+        if (!mounted) {
+          if (!completer.isCompleted) completer.completeError(StateError("تم إغلاق الشاشة قبل إدخال رمز التحقق"));
+          return;
+        }
+        final code = await _showPhoneCodeDialog();
+        if (completer.isCompleted) return;
+        if (code == null) {
+          completer.completeError(StateError("تم إلغاء التحقق من رقم الهاتف"));
+        } else {
+          completer.complete(PhoneAuthProvider.credential(verificationId: verificationId, smsCode: code));
+        }
+      },
+      codeAutoRetrievalTimeout: (verificationId) {
+        if (!codeWasSent && !completer.isCompleted) {
+          completer.completeError(TimeoutException("انتهت مهلة التحقق من رقم الهاتف"));
+        }
+      },
+    );
+    return completer.future;
+  }
+
+  Future<User> _reauthenticateCurrentUser(User user) async {
+    final providerIds = user.providerData.map((p) => p.providerId).toSet();
+    if (providerIds.contains('password')) {
+      final currentPassword = _currentPasswordController.text.trim();
+      if (currentPassword.isEmpty) throw StateError("أدخل كلمة السر الحالية لتأكيد ملكية الحساب");
+      final provider = user.providerData.firstWhere((p) => p.providerId == 'password');
+      final accountEmail = provider.email ?? user.email;
+      if (accountEmail == null || accountEmail.isEmpty) throw StateError("تعذر العثور على بريد وسيلة الدخول الحالية");
+      final credential = EmailAuthProvider.credential(email: accountEmail, password: currentPassword);
+      final result = await user.reauthenticateWithCredential(credential);
+      return result.user ?? FirebaseAuth.instance.currentUser ?? user;
+    }
+    if (providerIds.contains('google.com')) {
+      final googleSignIn = GoogleSignIn(
+        scopes: const ['email', 'profile'],
+        serverClientId: '965066441230-tha018u6nondvcsmsrtdu4thoob7m854.apps.googleusercontent.com',
+      );
+      await googleSignIn.signOut();
+      final googleUser = await googleSignIn.signIn();
+      if (googleUser == null) throw StateError("تم إلغاء إعادة المصادقة عبر Google");
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(accessToken: googleAuth.accessToken, idToken: googleAuth.idToken);
+      final result = await user.reauthenticateWithCredential(credential);
+      return result.user ?? FirebaseAuth.instance.currentUser ?? user;
+    }
+    if (providerIds.contains('phone')) {
+      final provider = user.providerData.firstWhere((p) => p.providerId == 'phone');
+      final phoneNumber = provider.phoneNumber ?? user.phoneNumber;
+      if (phoneNumber == null || phoneNumber.isEmpty) throw StateError("تعذر العثور على رقم الهاتف المرتبط لإعادة المصادقة");
+      final credential = await _requestPhoneReauthentication(phoneNumber);
+      final result = await user.reauthenticateWithCredential(credential);
+      return result.user ?? FirebaseAuth.instance.currentUser ?? user;
+    }
+    throw StateError("لا توجد وسيلة دخول معروفة لإعادة المصادقة. لم يتم إجراء أي تغيير.");
+  }
+
+  String _friendlyAuthError(Object error) {
+    if (error is FirebaseAuthException) {
+      switch (error.code) {
+        case 'email-already-in-use':
+        case 'credential-already-in-use':
+          return "هذا البريد مستخدم أو مربوط بحساب آخر";
+        case 'invalid-credential':
+        case 'wrong-password':
+        case 'invalid-login-credentials':
+          return "بيانات إعادة المصادقة غير صحيحة";
+        case 'requires-recent-login':
+          return "تعذر تأكيد الجلسة. سجّل الدخول من جديد ثم أعد المحاولة";
+        case 'network-request-failed':
+          return "تحقق من الاتصال بالإنترنت";
+        case 'provider-already-linked':
+          return "وسيلة البريد وكلمة السر مرتبطة بالحساب مسبقاً";
+        default:
+          return error.message ?? error.code;
+      }
+    }
+    return error.toString().replaceFirst("Bad state: ", "");
+  }
+
+  Future<void> _handleContinue() async {
+    if (_isSubmitting) return;
+    final auth = context.read<custom.AuthProvider>();
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
-
     if (email.isEmpty || password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("أدخل البريد وكلمة السر"), backgroundColor: Colors.redAccent),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("أدخل البريد وكلمة السر"), backgroundColor: Colors.redAccent));
       return;
     }
     if (password.length < 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("كلمة السر يجب أن تكون 6 أحرف على الأقل"), backgroundColor: Colors.redAccent),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("كلمة السر يجب أن تكون 6 أحرف على الأقل"), backgroundColor: Colors.redAccent));
       return;
     }
-
     final confirmed = await _showReAuthWarningDialog();
-    if (!confirmed) return;
-    if (!mounted) return;
+    if (!confirmed || !mounted) return;
+    setState(() => _isSubmitting = true);
 
-    bool success = false;
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) throw "لا يوجد مستخدم مسجل دخول";
+      var user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw StateError("لا يوجد مستخدم مسجل دخول");
+      final originalUid = user.uid;
+      await user.reload();
+      user = FirebaseAuth.instance.currentUser;
+      if (user == null || user.uid != originalUid) throw StateError("تغير الحساب الحالي. أعد تسجيل الدخول ثم حاول مجدداً");
 
-      final bool hasPasswordProvider = user.providerData.any((p) => p.providerId == 'password');
-      final bool hasGoogleProvider = user.providerData.any((p) => p.providerId == 'google.com');
-      final bool hasPhoneProvider = user.providerData.any((p) => p.providerId == 'phone');
+      final providerIds = user.providerData.map((p) => p.providerId).toSet();
+      final hasPasswordProvider = providerIds.contains('password');
+      user = await _reauthenticateCurrentUser(user);
+      if (user.uid != originalUid || FirebaseAuth.instance.currentUser?.uid != originalUid) {
+        throw StateError("تغير الحساب أثناء إعادة المصادقة. تم إيقاف العملية لحماية الحساب");
+      }
 
-      // الحالة 1: حسابه إيميل وباسورد أصلاً -> تحديث الإيميل والباسورد
+      bool emailSucceeded = false;
+      bool passwordSucceeded = false;
+      bool emailWasAlreadyCurrent = false;
+      String? emailError, passwordError, vaultError, verificationError, syncError;
+
       if (hasPasswordProvider) {
-        if (user.email?.toLowerCase()!= email.toLowerCase()) {
-          await user.verifyBeforeUpdateEmail(email);
-        }
-        try {
-          await user.updatePassword(password);
-        } catch (_) {
-          // قد يحتاج re-auth في بعض الحالات، نكمل الربط
-        }
-      } else {
-        // الحالة 2: حسابه رقم أو Google -> ربط إيميل وباسورد جديد بنفس الـ UID
-        final credential = EmailAuthProvider.credential(email: email, password: password);
-        try {
-          await user.linkWithCredential(credential);
-        } on FirebaseAuthException catch (e) {
-          if (e.code == 'provider-already-linked') {
-            // عنده باسورد أصلاً
-            if (user.email?.toLowerCase()!= email.toLowerCase()) {
-              await user.verifyBeforeUpdateEmail(email);
+        final provider = user.providerData.firstWhere((p) => p.providerId == 'password');
+        final currentEmail = (provider.email ?? user.email ?? '').trim();
+        if (currentEmail.toLowerCase() == email.toLowerCase()) {
+          emailSucceeded = true;
+          emailWasAlreadyCurrent = true;
+        } else {
+          try {
+            await user.verifyBeforeUpdateEmail(email);
+            emailSucceeded = true;
+            try {
+              await FirebaseFirestore.instance.collection('users').doc(originalUid).set({
+                'pendingEmail': email,
+                'pendingEmailRequestedAt': FieldValue.serverTimestamp(),
+              }, SetOptions(merge: true));
+            } catch (error) {
+              syncError = "تعذر حفظ حالة البريد المعلّق في Firestore: ${_friendlyAuthError(error)}";
             }
-            await user.updatePassword(password);
-          } else if (e.code == 'email-already-in-use') {
-            throw "هذا البريد مستخدم في حساب آخر";
-          } else if (e.code == 'credential-already-in-use') {
-            throw "هذا البريد مربوط بحساب آخر";
-          } else {
-            rethrow;
+          } catch (error) {
+            emailError = _friendlyAuthError(error);
           }
         }
-      }
 
-      // إرسال تحقق
-      try {
-        await user.sendEmailVerification();
-      } catch (_) {}
-
-      // تحديث Firestore بنفس الـ UID
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'email': email,
-        'email_lowercase': email.toLowerCase(),
-      }, SetOptions(merge: true));
-
-      // حفظ في الخزنة V5
-      try {
-        await auth.savePasswordToVault(user.uid, password);
-        await auth.syncCurrentAccountToVault(user.uid, auth.authType.isNotEmpty? auth.authType : 'email');
-      } catch (_) {}
-
-      success = true;
-    } catch (e) {
-      if (!mounted) return;
-      String msg = e.toString();
-      if (msg.contains('email-already-in-use') || msg.contains('مستخدم في حساب آخر')) {
-        msg = "هذا البريد مستخدم في حساب آخر";
-      } else if (msg.contains('credential-already-in-use') || msg.contains('مربوط بحساب آخر')) {
-        msg = "هذا البريد مربوط بحساب آخر";
-      } else if (msg.contains('requires-recent-login')) {
-        msg = "يجب تسجيل الدخول من جديد قبل التغيير";
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.redAccent),
-      );
-    }
-
-    if (!mounted) return;
-
-    if (success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          backgroundColor: Color(0xFF1A222C),
-          duration: Duration(seconds: 4),
-          behavior: SnackBarBehavior.floating,
-          margin: EdgeInsets.all(16),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(12))),
-          content: Text(
-            "تم ربط البريد وكلمة السر بنجاح. تم إرسال رسالة تأكيد إلى بريدك الجديد، يرجى فتحها وتفعيلها. قم بتسجيل الدخول مرة أخرى.",
-            style: TextStyle(color: Colors.white, fontSize: 13, height: 1.4),
-            textAlign: TextAlign.right,
-          ),
-        ),
-      );
-
-      await Future.delayed(const Duration(seconds: 3));
-
-      if (!mounted) return;
-
-      try {
-        String? fcmToken = await FirebaseMessaging.instance.getToken();
-        final uid = FirebaseAuth.instance.currentUser?.uid;
-        if (uid!= null && fcmToken!= null) {
-          await FirebaseFirestore.instance.collection('users').doc(uid).update({
-            'fcmTokens': FieldValue.arrayRemove([fcmToken]),
-          });
+        // تحديث كلمة السر مستقل تماماً عن طلب تغيير البريد.
+        try {
+          await user.updatePassword(password);
+          passwordSucceeded = true;
+          try {
+            await auth.savePasswordToVaultStrict(originalUid, password);
+          } catch (error) {
+            vaultError = _friendlyAuthError(error);
+          }
+        } catch (error) {
+          passwordError = _friendlyAuthError(error);
         }
-      } catch (e) {
-        debugPrint(e.toString());
+      } else {
+        final credential = EmailAuthProvider.credential(email: email, password: password);
+        try {
+          final linked = await user.linkWithCredential(credential);
+          user = linked.user ?? FirebaseAuth.instance.currentUser ?? user;
+          if (!user.providerData.any((p) => p.providerId == 'password')) {
+            await user.reload();
+            user = FirebaseAuth.instance.currentUser ?? user;
+          }
+          if (user.uid != originalUid || FirebaseAuth.instance.currentUser?.uid != originalUid ||
+              !user.providerData.any((p) => p.providerId == 'password')) {
+            throw StateError("لم يؤكد Firebase ربط وسيلة البريد وكلمة السر بالحساب الحالي");
+          }
+          emailSucceeded = true;
+          passwordSucceeded = true;
+          try {
+            await user.sendEmailVerification();
+          } catch (error) {
+            verificationError = _friendlyAuthError(error);
+          }
+          try {
+            await FirebaseFirestore.instance.collection('users').doc(originalUid).set({
+              'pendingEmail': email,
+              'pendingEmailRequestedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+          } catch (error) {
+            syncError = "تعذر حفظ حالة البريد المعلّق في Firestore: ${_friendlyAuthError(error)}";
+          }
+          try {
+            await auth.savePasswordToVaultStrict(originalUid, password);
+          } catch (error) {
+            vaultError = _friendlyAuthError(error);
+          }
+        } on FirebaseAuthException catch (error) {
+          throw StateError(_friendlyAuthError(error));
+        }
       }
 
-      await auth.signOut();
+      try {
+        await auth.syncAccountProvidersFromFirebase();
+      } catch (error) {
+        syncError = syncError == null
+            ? "تعذرت مزامنة بيانات الحساب: ${_friendlyAuthError(error)}"
+            : "$syncError\nتعذرت مزامنة بيانات الحساب: ${_friendlyAuthError(error)}";
+      }
 
       if (!mounted) return;
+      final messages = <String>[];
+      if (emailSucceeded) {
+        messages.add(emailWasAlreadyCurrent
+            ? "البريد الإلكتروني لم يتغير لأنه هو البريد الحالي بالفعل."
+            : "تم إرسال طلب تأكيد البريد إلى $email. سيبقى البريد الحالي معتمداً حتى تأكيد الرسالة.");
+      } else {
+        messages.add("فشل تغيير البريد: ${emailError ?? "لم تكتمل العملية"}");
+      }
+      if (passwordSucceeded) {
+        messages.add("تم تحديث كلمة السر في Firebase بنجاح.");
+      } else {
+        messages.add("فشل تحديث كلمة السر: ${passwordError ?? "لم تكتمل العملية"}");
+      }
+      if (verificationError != null) messages.add("تعذر إرسال رسالة تأكيد البريد: $verificationError");
+      if (vaultError != null) messages.add("كلمة السر تغيّرت في Firebase لكن تعذر تحديث الخزنة المحلية: $vaultError");
+      if (syncError != null) messages.add(syncError);
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-        (route) => false,
-      );
+      final allSucceeded = emailSucceeded && passwordSucceeded && verificationError == null && vaultError == null && syncError == null;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(messages.join("\n")),
+        backgroundColor: allSucceeded ? Colors.teal : Colors.orange,
+        duration: const Duration(seconds: 8),
+      ));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_friendlyAuthError(error)),
+        backgroundColor: Colors.redAccent,
+        duration: const Duration(seconds: 6),
+      ));
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -267,12 +407,28 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               ),
             ),
+            if (FirebaseAuth.instance.currentUser?.providerData.any((p) => p.providerId == 'password') ?? false) ...[
+              const SizedBox(height: 15),
+              TextField(
+                controller: _currentPasswordController,
+                obscureText: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: "كلمة السر الحالية لتأكيد الحساب",
+                  hintStyle: const TextStyle(color: Colors.white38),
+                  filled: true,
+                  fillColor: surfaceColor,
+                  prefixIcon: const Icon(Icons.lock_clock_outlined, color: Colors.white38),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+              ),
+            ],
             const Spacer(),
             SizedBox(
               width: double.infinity,
               height: 55,
               child: ElevatedButton(
-                onPressed: auth.isLoading
+                onPressed: (auth.isLoading || _isSubmitting)
                    ? null
                     : () async {
                         await _handleContinue();
@@ -281,7 +437,7 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
                   backgroundColor: Colors.teal,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
-                child: auth.isLoading
+                child: (auth.isLoading || _isSubmitting)
                    ? const CircularProgressIndicator(color: Colors.white)
                     : const Text("متابعة", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
               ),

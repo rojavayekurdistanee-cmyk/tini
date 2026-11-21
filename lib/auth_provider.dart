@@ -728,18 +728,49 @@ Future<void> fetchUserData() async {
         _resetVerifiedAge();
       }
       
-      _email = data['email'] ?? user.email ?? "";
-          
-      _phoneNumber = data['phoneNumber'] ?? user.phoneNumber ?? "";
+      final passwordProviders = user.providerData.where((p) => p.providerId == 'password').toList();
+      final googleProviders = user.providerData.where((p) => p.providerId == 'google.com').toList();
+      final phoneProviders = user.providerData.where((p) => p.providerId == 'phone').toList();
+      final resolvedEmail = passwordProviders.isNotEmpty
+          ? (passwordProviders.first.email ?? user.email)
+          : (googleProviders.isNotEmpty ? (googleProviders.first.email ?? user.email) : null);
+      final resolvedPhone = phoneProviders.isNotEmpty
+          ? (phoneProviders.first.phoneNumber ?? user.phoneNumber)
+          : null;
 
-      // [Tini Fix V6.1 - Immediate Sync]: مزامنة فورية بعد تأكيد الرابط
-      if (user.email != null && user.email!.isNotEmpty && _email != user.email) {
-        _email = user.email;
-        FirebaseFirestore.instance.collection('users').doc(user.uid).set({'email': user.email}, SetOptions(merge: true));
+      // بيانات الاتصال تُقرأ من المزوّد المرتبط فعلياً، وليس من قيم Firestore القديمة.
+      _email = resolvedEmail ?? "";
+      _phoneNumber = resolvedPhone ?? "";
+
+      final contactRepairs = <String, dynamic>{};
+      if (resolvedEmail != null && resolvedEmail.isNotEmpty) {
+        if (data['email'] != resolvedEmail) contactRepairs['email'] = resolvedEmail;
+        if (data['email_lowercase'] != resolvedEmail.toLowerCase()) {
+          contactRepairs['email_lowercase'] = resolvedEmail.toLowerCase();
+        }
+      } else {
+        if (data.containsKey('email')) contactRepairs['email'] = FieldValue.delete();
+        if (data.containsKey('email_lowercase')) contactRepairs['email_lowercase'] = FieldValue.delete();
       }
-      if (user.phoneNumber != null && user.phoneNumber!.isNotEmpty && _phoneNumber != user.phoneNumber) {
-        _phoneNumber = user.phoneNumber;
-        FirebaseFirestore.instance.collection('users').doc(user.uid).set({'phoneNumber': user.phoneNumber, 'phone': user.phoneNumber}, SetOptions(merge: true));
+      if (resolvedPhone != null && resolvedPhone.isNotEmpty) {
+        if (data['phoneNumber'] != resolvedPhone) contactRepairs['phoneNumber'] = resolvedPhone;
+        if (data['phone'] != resolvedPhone) contactRepairs['phone'] = resolvedPhone;
+      } else {
+        if (data.containsKey('phoneNumber')) contactRepairs['phoneNumber'] = FieldValue.delete();
+        if (data.containsKey('phone')) contactRepairs['phone'] = FieldValue.delete();
+      }
+      if (passwordProviders.isNotEmpty && data['emailVerified'] != user.emailVerified) {
+        contactRepairs['emailVerified'] = user.emailVerified;
+      }
+      if (contactRepairs.isNotEmpty) {
+        try {
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+            contactRepairs,
+            SetOptions(merge: true),
+          );
+        } catch (_) {
+          // فشل إصلاح حقول الاتصال لا يمنع تحميل بقية بيانات الحساب.
+        }
       }
 
       if (data.containsKey('createdAt') && data['createdAt'] != null) {
@@ -1087,6 +1118,9 @@ Future<bool> updateUserProfile(String newFullName, String newUsername, String ne
           'email': email.trim(),
           'authMethod': 'email',
         }, SetOptions(merge: true));
+
+        // مزامنة جميع وسائل الدخول من Firebase بعد نجاح تسجيل الدخول.
+        await syncAccountProvidersFromFirebase();
       }
       
       await fetchUserData();
@@ -1286,6 +1320,121 @@ try {
 
     }
   }
+
+  // مزامنة وسائل الدخول من Firebase بوصفها المصدر الفعلي للحساب.
+  // تُستخدم بعد unlink وعند فتح تفاصيل الحساب لإصلاح أي اختلاف سابق.
+  Future<void> syncAccountProvidersFromFirebase() async {
+    final initialUser = FirebaseAuth.instance.currentUser;
+    if (initialUser == null) return;
+    final uid = initialUser.uid;
+
+    await initialUser.reload();
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || user.uid != uid) {
+      throw StateError("تغير الحساب أثناء مزامنة وسائل الدخول");
+    }
+
+    final providers = user.providerData
+        .where((provider) => provider.providerId != 'firebase')
+        .toList();
+    final providerIds = providers.map((provider) => provider.providerId).toSet();
+    if (providerIds.isEmpty) {
+      throw StateError("لم يتم العثور على وسيلة دخول مرتبطة بالحساب");
+    }
+
+    final passwordProviders = providers.where((p) => p.providerId == 'password').toList();
+    final googleProviders = providers.where((p) => p.providerId == 'google.com').toList();
+    final phoneProviders = providers.where((p) => p.providerId == 'phone').toList();
+    final hasPassword = passwordProviders.isNotEmpty;
+    final hasGoogle = googleProviders.isNotEmpty;
+    final hasPhone = phoneProviders.isNotEmpty;
+
+    final email = hasPassword
+        ? (passwordProviders.first.email ?? user.email)
+        : (hasGoogle ? (googleProviders.first.email ?? user.email) : null);
+    final googleEmail = hasGoogle ? googleProviders.first.email : null;
+    final phoneNumber = (hasPhone ? phoneProviders.first.phoneNumber : null) ?? user.phoneNumber;
+    final loginType = hasGoogle ? 'google' : (hasPhone ? 'phone' : 'email');
+    final normalizedProviders = providerIds.toList()..sort();
+
+    final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+    String? firestoreSyncError;
+    try {
+      final snapshot = await userRef.get();
+      final data = snapshot.data() ?? <String, dynamic>{};
+      final updates = <String, dynamic>{};
+
+      void syncField(String key, dynamic value) {
+        if (value == null || (value is String && value.isEmpty)) {
+          if (data.containsKey(key)) updates[key] = FieldValue.delete();
+        } else {
+          final existing = data[key];
+          final bool same = value is List && existing is List
+              ? existing.length == value.length &&
+                  List.generate(value.length, (index) => existing[index] == value[index]).every((match) => match)
+              : existing == value;
+          if (!same) updates[key] = value;
+        }
+      }
+
+      syncField('email', email);
+      syncField('email_lowercase', email?.toLowerCase());
+      syncField('phoneNumber', hasPhone ? phoneNumber : null);
+      syncField('phone', hasPhone ? phoneNumber : null);
+      syncField('googleEmail', googleEmail);
+      syncField('isGoogleLinked', hasGoogle);
+      syncField('authMethod', loginType);
+      syncField('authProviders', normalizedProviders);
+      syncField('emailVerified', hasPassword ? user.emailVerified : null);
+
+      final pendingEmail = data['pendingEmail'];
+      if (!hasPassword || (user.emailVerified && pendingEmail is String && pendingEmail.isNotEmpty &&
+          email != null && pendingEmail.toLowerCase() == email.toLowerCase())) {
+        if (data.containsKey('pendingEmail')) updates['pendingEmail'] = FieldValue.delete();
+        if (data.containsKey('pendingEmailRequestedAt')) updates['pendingEmailRequestedAt'] = FieldValue.delete();
+      }
+
+      if (updates.isNotEmpty) {
+        await userRef.set(updates, SetOptions(merge: true));
+      }
+    } catch (error) {
+      firestoreSyncError = error.toString();
+    }
+
+    // حدّث الخزنة حتى لو تعذر الاتصال بـ Firestore؛ لكل مخزن نتيجة مستقلة.
+    String? vaultSyncError;
+    try {
+      await _secureStorage.write(key: 'auth_type_$uid', value: loginType);
+      if (hasPhone && phoneNumber != null && phoneNumber.isNotEmpty) {
+        await _secureStorage.write(key: 'auth_phone_$uid', value: phoneNumber);
+      } else {
+        await _secureStorage.delete(key: 'auth_phone_$uid');
+      }
+      if (!hasPassword) {
+        await _secureStorage.delete(key: 'auth_pass_$uid');
+      }
+    } catch (error) {
+      vaultSyncError = error.toString();
+    }
+
+    _email = email ?? '';
+    _phoneNumber = hasPhone ? (phoneNumber ?? '') : '';
+    _authType = loginType;
+    try {
+      await _saveAccountLocally();
+    } catch (error) {
+      vaultSyncError = vaultSyncError == null
+          ? error.toString()
+          : "$vaultSyncError; local cache: $error";
+    }
+    notifyListeners();
+    if (firestoreSyncError != null || vaultSyncError != null) {
+      final errors = <String>[];
+      if (firestoreSyncError != null) errors.add("Firestore: $firestoreSyncError");
+      if (vaultSyncError != null) errors.add("Vault: $vaultSyncError");
+      throw StateError(errors.join("\n"));
+    }
+  }
   // [PASSKEY V5 - عبر PasskeyService يلي انت انشأتو]
   Future<void> loadPasskeyStatus() async {
     _passkeyEnabled = await PasskeyService.isEnabledLocal();
@@ -1426,6 +1575,11 @@ try {
     } catch (_) {
 
     }
+  }
+
+  // نسخة صارمة لمسارات تغيير كلمة السر: لا تبتلع أخطاء التخزين المحلي.
+  Future<void> savePasswordToVaultStrict(String uid, String password) async {
+    await _secureStorage.write(key: 'auth_pass_$uid', value: password.trim());
   }
   // [Tini - Live Sync Engine]
   StreamSubscription<DocumentSnapshot>? _counterSubscription;

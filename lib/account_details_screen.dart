@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'auth_provider.dart' as custom;
 
 import 'change_phone_screen.dart';
@@ -27,6 +28,7 @@ class AccountDetailsScreen extends StatefulWidget {
 class _AccountDetailsScreenState extends State<AccountDetailsScreen> with WidgetsBindingObserver {
   final Color bgColor = const Color(0xFF0F1720);
   final Color surfaceColor = const Color(0xFF1A222C);
+  String? _pendingEmail;
 
   @override
   void initState() {
@@ -36,11 +38,30 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
   }
 
   Future<void> _refreshData() async {
+    final auth = context.read<custom.AuthProvider>();
     try {
       await FirebaseAuth.instance.currentUser?.reload();
-    } catch (_) {}
+      await auth.syncAccountProvidersFromFirebase();
+    } catch (_) {
+      // لا نخفي فشل مزامنة وسائل الدخول؛ نوضح للمطوّر أن التحديث لم يكتمل.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("تعذرت مزامنة وسائل تسجيل الدخول. تحقق من الاتصال وحاول تحديث الصفحة."),
+          ),
+        );
+      }
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      try {
+        final snapshot = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+        final pending = snapshot.data()?['pendingEmail'];
+        if (mounted) setState(() => _pendingEmail = pending is String && pending.isNotEmpty ? pending : null);
+      } catch (_) {}
+    }
     if (!mounted) return;
-    await context.read<custom.AuthProvider>().fetchUserData();
+    await auth.fetchUserData();
     if (mounted) setState(() {});
   }
 
@@ -77,15 +98,29 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
       body: Consumer<custom.AuthProvider>(
         builder: (context, auth, child) {
           final currentUser = FirebaseAuth.instance.currentUser;
-          final hasGoogle = currentUser?.providerData.any((p) => p.providerId == 'google.com') ?? false;
-          final hasPassword = currentUser?.providerData.any((p) => p.providerId == 'password') ?? false;
-          final hasPhoneProvider = currentUser?.providerData.any((p) => p.providerId == 'phone') ?? false;
-          final googleList = currentUser?.providerData.where((p) => p.providerId == 'google.com').toList();
-          final String googleEmail = (googleList != null && googleList.isNotEmpty) ? (googleList.first.email ?? "") : "";
-          final passwordList = currentUser?.providerData.where((p) => p.providerId == 'password').toList();
-          final String passwordEmail = (passwordList != null && passwordList.isNotEmpty) ? (passwordList.first.email ?? "") : "";
-          final phoneList = currentUser?.providerData.where((p) => p.providerId == 'phone').toList();
-          final String phoneFromProvider = (phoneList != null && phoneList.isNotEmpty) ? (phoneList.first.phoneNumber ?? "") : "";
+          final providers = currentUser?.providerData ?? <UserInfo>[];
+          final googleProviders = providers.where((p) => p.providerId == 'google.com').toList();
+          final passwordProviders = providers.where((p) => p.providerId == 'password').toList();
+          final phoneProviders = providers.where((p) => p.providerId == 'phone').toList();
+          final hasGoogle = googleProviders.isNotEmpty;
+          final hasPassword = passwordProviders.isNotEmpty;
+          final hasPhoneProvider = phoneProviders.isNotEmpty;
+          final googleEmail = hasGoogle ? (googleProviders.first.email ?? "") : "";
+          final passwordEmail = hasPassword ? (passwordProviders.first.email ?? currentUser?.email ?? "") : "";
+          final phoneFromProvider = hasPhoneProvider
+              ? (phoneProviders.first.phoneNumber ?? currentUser?.phoneNumber ?? "")
+              : "";
+          final emailVerificationStatus = _pendingEmail != null
+              ? "\nبانتظار تأكيد: $_pendingEmail"
+              : (currentUser?.emailVerified == false ? "\nبانتظار تأكيد البريد" : "");
+          final emailDisplay = !hasPassword
+              ? "غير مرتبط"
+              : "${passwordEmail.isEmpty ? "مرتبط" : passwordEmail}$emailVerificationStatus";
+          final phoneDisplay = !hasPhoneProvider
+              ? "غير مرتبط"
+              : (phoneFromProvider.isEmpty ? "مرتبط" : phoneFromProvider);
+          final phoneActionValue = hasPhoneProvider ? (phoneFromProvider.isEmpty ? "مرتبط" : phoneFromProvider) : "";
+          final emailActionValue = hasPassword ? (passwordEmail.isEmpty ? "مرتبط" : passwordEmail) : "";
 
           return RefreshIndicator(
             onRefresh: () => _refreshData(),
@@ -98,15 +133,15 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
                     context,
                     Iconsax.call, 
                     "رقم الهاتف", 
-                    hasPhoneProvider ? (phoneFromProvider.isEmpty ? (auth.phoneNumber.isEmpty ? "غير مرتبط" : auth.phoneNumber) : phoneFromProvider) : "غير مرتبط",
-                    () => _showActionSheet(context, "رقم الهاتف", Iconsax.call, hasPhoneProvider ? (phoneFromProvider.isEmpty ? auth.phoneNumber : phoneFromProvider) : "", isPhone: true),
+                    phoneDisplay,
+                    () => _showActionSheet(context, "رقم الهاتف", Iconsax.call, phoneActionValue, isPhone: true),
                   ),
                   _buildInfoTile(
                     context,
                     Iconsax.sms, 
                     "البريد الإلكتروني", 
-                    hasPassword ? (passwordEmail.isEmpty ? (auth.email.isEmpty ? "غير مرتبط" : auth.email) : passwordEmail) : "غير مرتبط",
-                    () => _showActionSheet(context, "البريد الإلكتروني", Iconsax.sms, hasPassword ? (passwordEmail.isEmpty ? auth.email : passwordEmail) : "", isPhone: false),
+                    emailDisplay,
+                    () => _showActionSheet(context, "البريد الإلكتروني", Iconsax.sms, emailActionValue, isPhone: false),
                   ),
                   _buildInfoTile(
                     context,

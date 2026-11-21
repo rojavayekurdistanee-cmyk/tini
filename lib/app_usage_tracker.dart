@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -103,6 +105,10 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
   bool _weeklyEnabled = false;
   int _limitMinutes = 60;
   Future<void> _settingsTail = Future<void>.value();
+  StreamSubscription<User?>? _authStateSubscription;
+  String? _cloudSettingsUid;
+  String? _cloudSyncUid;
+  Future<void>? _cloudSyncFuture;
 
   bool get loading => _loading;
   bool get loadFailed => _loadFailed;
@@ -129,6 +135,20 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
     final lifecycle = binding.lifecycleState;
     if (lifecycle == null || lifecycle == AppLifecycleState.resumed) _resume();
     ready = _load();
+    _authStateSubscription = FirebaseAuth.instance.authStateChanges().listen(
+      (user) {
+        if (user == null) {
+          _cloudSettingsUid = null;
+          _cloudSyncUid = null;
+          _cloudSyncFuture = null;
+          return;
+        }
+        unawaited(_syncCloudSettings(user));
+      },
+      onError: (Object error) {
+        debugPrint('Usage settings auth listener failed: $error');
+      },
+    );
   }
 
   Future<void> _load() async {
@@ -194,6 +214,89 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
         _flush();
         notifyListeners();
       }
+    }
+  }
+
+  Future<void> _syncCloudSettings(User user) async {
+    final uid = user.uid;
+    if (_cloudSettingsUid == uid) return;
+    if (_cloudSyncUid == uid && _cloudSyncFuture != null) {
+      await _cloudSyncFuture;
+      return;
+    }
+
+    _cloudSyncUid = uid;
+    final operation = () async {
+      await ready;
+      if (_disposed || FirebaseAuth.instance.currentUser?.uid != uid) return;
+      final prefs = _prefs;
+      if (prefs == null) return;
+
+      try {
+        final reference = FirebaseFirestore.instance.collection('users').doc(uid);
+        final snapshot = await reference.get();
+        if (_disposed || FirebaseAuth.instance.currentUser?.uid != uid) return;
+
+        final stored = snapshot.data()?['appUsageSettings'];
+        if (stored is Map) {
+          final daily = stored['dailyEnabled'];
+          final weekly = stored['weeklyEnabled'];
+          final limit = stored['limitMinutes'];
+          final restoredDaily = daily is bool ? daily : _dailyEnabled;
+          final restoredWeekly = weekly is bool ? weekly : _weeklyEnabled;
+          final restoredLimit = limit is num
+              ? limit.toInt().clamp(1, 1440).toInt()
+              : _limitMinutes;
+
+          await prefs.setBool('titi_daily_limit', restoredDaily);
+          await prefs.setBool('titi_weekly_update', restoredWeekly);
+          await prefs.setInt('titi_daily_limit_minutes', restoredLimit);
+
+          if (_disposed || FirebaseAuth.instance.currentUser?.uid != uid) return;
+          _dailyEnabled = restoredDaily;
+          _weeklyEnabled = restoredWeekly;
+          _limitMinutes = restoredLimit;
+          _notifications.setWeeklyEnabled(_weeklyEnabled);
+        } else {
+          await reference.set({
+            'appUsageSettings': {
+              'dailyEnabled': _dailyEnabled,
+              'weeklyEnabled': _weeklyEnabled,
+              'limitMinutes': _limitMinutes,
+            },
+          }, SetOptions(merge: true));
+        }
+
+        if (!_disposed && FirebaseAuth.instance.currentUser?.uid == uid) {
+          _cloudSettingsUid = uid;
+          notifyListeners();
+        }
+      } catch (error) {
+        debugPrint('Usage settings cloud sync failed: $error');
+      }
+    }();
+
+    _cloudSyncFuture = operation;
+    await operation;
+    if (_cloudSyncUid == uid) {
+      _cloudSyncUid = null;
+      _cloudSyncFuture = null;
+    }
+  }
+
+  Future<void> _saveCloudSettingsIfReady() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || _cloudSettingsUid != user.uid) return;
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'appUsageSettings': {
+          'dailyEnabled': _dailyEnabled,
+          'weeklyEnabled': _weeklyEnabled,
+          'limitMinutes': _limitMinutes,
+        },
+      }, SetOptions(merge: true));
+    } catch (error) {
+      debugPrint('Usage settings cloud save failed: $error');
     }
   }
 
@@ -406,6 +509,10 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
     VoidCallback update,
   ) async {
     await ready;
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser != null && _cloudSettingsUid != currentUser.uid) {
+      await _syncCloudSettings(currentUser);
+    }
     if (_prefs == null || _disposed) return false;
     var succeeded = false;
     final operation = _settingsTail.then((_) async {
@@ -416,6 +523,7 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
         update();
         succeeded = true;
         notifyListeners();
+        await _saveCloudSettingsIfReady();
       } catch (error) {
         debugPrint('Usage preference save failed: $error');
       }
@@ -449,6 +557,7 @@ class AppUsageTracker extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _authStateSubscription?.cancel();
     _disposed = true;
     _pause();
     // _pause checkpoints the final interval. Keep pending writes/retries alive

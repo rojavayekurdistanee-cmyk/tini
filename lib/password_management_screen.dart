@@ -107,7 +107,7 @@ class _PasswordManagementScreenState extends State<PasswordManagementScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF000000),
+      backgroundColor: const Color(0xFF0F1720),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
