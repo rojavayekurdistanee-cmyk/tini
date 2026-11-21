@@ -1118,6 +1118,9 @@ Future<bool> updateUserProfile(String newFullName, String newUsername, String ne
           'email': email.trim(),
           'authMethod': 'email',
         }, SetOptions(merge: true));
+
+        // مزامنة جميع وسائل الدخول من Firebase بعد نجاح تسجيل الدخول.
+        await syncAccountProvidersFromFirebase();
       }
       
       await fetchUserData();
