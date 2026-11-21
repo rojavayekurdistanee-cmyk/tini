@@ -1355,60 +1355,82 @@ try {
     final normalizedProviders = providerIds.toList()..sort();
 
     final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
-    final snapshot = await userRef.get();
-    final data = snapshot.data() ?? <String, dynamic>{};
-    final updates = <String, dynamic>{};
+    String? firestoreSyncError;
+    try {
+      final snapshot = await userRef.get();
+      final data = snapshot.data() ?? <String, dynamic>{};
+      final updates = <String, dynamic>{};
 
-    void syncField(String key, dynamic value) {
-      if (value == null || (value is String && value.isEmpty)) {
-        if (data.containsKey(key)) updates[key] = FieldValue.delete();
-      } else {
-        final existing = data[key];
-        final bool same = value is List && existing is List
-            ? existing.length == value.length &&
-                List.generate(value.length, (index) => existing[index] == value[index]).every((match) => match)
-            : existing == value;
-        if (!same) updates[key] = value;
+      void syncField(String key, dynamic value) {
+        if (value == null || (value is String && value.isEmpty)) {
+          if (data.containsKey(key)) updates[key] = FieldValue.delete();
+        } else {
+          final existing = data[key];
+          final bool same = value is List && existing is List
+              ? existing.length == value.length &&
+                  List.generate(value.length, (index) => existing[index] == value[index]).every((match) => match)
+              : existing == value;
+          if (!same) updates[key] = value;
+        }
       }
+
+      syncField('email', email);
+      syncField('email_lowercase', email?.toLowerCase());
+      syncField('phoneNumber', hasPhone ? phoneNumber : null);
+      syncField('phone', hasPhone ? phoneNumber : null);
+      syncField('googleEmail', googleEmail);
+      syncField('isGoogleLinked', hasGoogle);
+      syncField('authMethod', loginType);
+      syncField('authProviders', normalizedProviders);
+      syncField('emailVerified', hasPassword ? user.emailVerified : null);
+
+      final pendingEmail = data['pendingEmail'];
+      if (!hasPassword || (user.emailVerified && pendingEmail is String && pendingEmail.isNotEmpty &&
+          email != null && pendingEmail.toLowerCase() == email.toLowerCase())) {
+        if (data.containsKey('pendingEmail')) updates['pendingEmail'] = FieldValue.delete();
+        if (data.containsKey('pendingEmailRequestedAt')) updates['pendingEmailRequestedAt'] = FieldValue.delete();
+      }
+
+      if (updates.isNotEmpty) {
+        await userRef.set(updates, SetOptions(merge: true));
+      }
+    } catch (error) {
+      firestoreSyncError = error.toString();
     }
 
-    syncField('email', email);
-    syncField('email_lowercase', email?.toLowerCase());
-    syncField('phoneNumber', hasPhone ? phoneNumber : null);
-    syncField('phone', hasPhone ? phoneNumber : null);
-    syncField('googleEmail', googleEmail);
-    syncField('isGoogleLinked', hasGoogle);
-    syncField('authMethod', loginType);
-    syncField('authProviders', normalizedProviders);
-    syncField('emailVerified', hasPassword ? user.emailVerified : null);
-
-    final pendingEmail = data['pendingEmail'];
-    if (!hasPassword || (user.emailVerified && pendingEmail is String && pendingEmail.isNotEmpty &&
-        email != null && pendingEmail.toLowerCase() == email.toLowerCase())) {
-      if (data.containsKey('pendingEmail')) updates['pendingEmail'] = FieldValue.delete();
-      if (data.containsKey('pendingEmailRequestedAt')) updates['pendingEmailRequestedAt'] = FieldValue.delete();
-    }
-
-    if (updates.isNotEmpty) {
-      await userRef.set(updates, SetOptions(merge: true));
-    }
-
-    // لا نترك نوع دخول قديماً أو بيانات لمزوّد تم إلغاء ربطه.
-    await _secureStorage.write(key: 'auth_type_$uid', value: loginType);
-    if (hasPhone && phoneNumber != null && phoneNumber.isNotEmpty) {
-      await _secureStorage.write(key: 'auth_phone_$uid', value: phoneNumber);
-    } else {
-      await _secureStorage.delete(key: 'auth_phone_$uid');
-    }
-    if (!hasPassword) {
-      await _secureStorage.delete(key: 'auth_pass_$uid');
+    // حدّث الخزنة حتى لو تعذر الاتصال بـ Firestore؛ لكل مخزن نتيجة مستقلة.
+    String? vaultSyncError;
+    try {
+      await _secureStorage.write(key: 'auth_type_$uid', value: loginType);
+      if (hasPhone && phoneNumber != null && phoneNumber.isNotEmpty) {
+        await _secureStorage.write(key: 'auth_phone_$uid', value: phoneNumber);
+      } else {
+        await _secureStorage.delete(key: 'auth_phone_$uid');
+      }
+      if (!hasPassword) {
+        await _secureStorage.delete(key: 'auth_pass_$uid');
+      }
+    } catch (error) {
+      vaultSyncError = error.toString();
     }
 
     _email = email ?? '';
     _phoneNumber = hasPhone ? (phoneNumber ?? '') : '';
     _authType = loginType;
-    await _saveAccountLocally();
+    try {
+      await _saveAccountLocally();
+    } catch (error) {
+      vaultSyncError = vaultSyncError == null
+          ? error.toString()
+          : "$vaultSyncError; local cache: $error";
+    }
     notifyListeners();
+    if (firestoreSyncError != null || vaultSyncError != null) {
+      final errors = <String>[];
+      if (firestoreSyncError != null) errors.add("Firestore: $firestoreSyncError");
+      if (vaultSyncError != null) errors.add("Vault: $vaultSyncError");
+      throw StateError(errors.join("\n"));
+    }
   }
   // [PASSKEY V5 - عبر PasskeyService يلي انت انشأتو]
   Future<void> loadPasskeyStatus() async {
