@@ -278,9 +278,12 @@ class _ChangeEmailScreenState extends State<ChangeEmailScreen> {
         try {
           final linked = await user.linkWithCredential(credential);
           user = linked.user ?? FirebaseAuth.instance.currentUser ?? user;
-          await user.reload();
-          user = FirebaseAuth.instance.currentUser ?? user;
-          if (user.uid != originalUid || !user.providerData.any((p) => p.providerId == 'password')) {
+          if (!user.providerData.any((p) => p.providerId == 'password')) {
+            await user.reload();
+            user = FirebaseAuth.instance.currentUser ?? user;
+          }
+          if (user.uid != originalUid || FirebaseAuth.instance.currentUser?.uid != originalUid ||
+              !user.providerData.any((p) => p.providerId == 'password')) {
             throw StateError("لم يؤكد Firebase ربط وسيلة البريد وكلمة السر بالحساب الحالي");
           }
           emailSucceeded = true;
