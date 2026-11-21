@@ -43,7 +43,14 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> with Widget
       await FirebaseAuth.instance.currentUser?.reload();
       await auth.syncAccountProvidersFromFirebase();
     } catch (_) {
-      // تبقى الشاشة معروضة من بيانات Firebase الحالية؛ ستُعاد محاولة المزامنة لاحقاً.
+      // لا نخفي فشل مزامنة وسائل الدخول؛ نوضح للمطوّر أن التحديث لم يكتمل.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("تعذرت مزامنة وسائل تسجيل الدخول. تحقق من الاتصال وحاول تحديث الصفحة."),
+          ),
+        );
+      }
     }
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
